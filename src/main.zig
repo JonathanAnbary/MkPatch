@@ -1,5 +1,6 @@
 const std = @import("std");
 const libelf = @cImport(@cInclude("libelf.h"));
+const capstone = @cImport(@cInclude("capstone/capstone.h"));
 
 fn kind_string(kind: c_uint) []const u8 {
     return switch (kind) {
@@ -98,7 +99,7 @@ fn get_offset_phdr(comptime ei_class: EI_CLASS, elf: *libelf.Elf, off: ElfOffset
     return Error.SegmentNotFound;
 }
 
-fn insert_patch(comptime ei_class: EI_CLASS, elf: *libelf.Elf, off: ElfOffset(ei_class), patch: []const u8) !void {
+fn insert_patch(comptime ei_class: EI_CLASS, elf: *libelf.Elf, cs_handle: capstone.csh, off: ElfOffset(ei_class), patch: []const u8) !void {
     _ = patch;
     // const phdr: *ElfPhdr(ei_class) = try get_offset_phdr(ei_class, elf, off);
     // std.debug.print("phdr = {*}\n", .{phdr});
@@ -113,10 +114,30 @@ fn insert_patch(comptime ei_class: EI_CLASS, elf: *libelf.Elf, off: ElfOffset(ei
     }
     // std.debug.print("d_buf = {}\n", .{elf_data.d_buf.?});
     const sec_data: []const u8 = @as([*]const u8, @ptrCast(elf_data.d_buf.?))[0..elf_data.d_size];
-    std.debug.print("{s}\n", .{sec_data[0..10]});
+    std.debug.print("{x}\n", .{sec_data[0..10]});
+    const parsed_shdr = elf_getshdr(ei_class, scn).?;
+    std.debug.print("parsed_shdr.sh_offset - {x}\n", .{parsed_shdr.sh_offset});
+    std.debug.print("off - {x}\n", .{off});
+    std.debug.print("{x}\n", .{off - parsed_shdr.sh_offset});
+    std.debug.print("{x}\n", .{sec_data[off - parsed_shdr.sh_offset .. 10 + off - parsed_shdr.sh_offset]});
+    std.debug.print("", .{});
+    const insn: [*][*]capstone.cs_insn = undefined;
+    const count = capstone.cs_disasm(cs_handle, @as([*]const u8, @ptrCast(sec_data)), elf_data.d_size, 0x1000, 10, insn);
+
+    if (count > 0) {
+        for (0..count) |j| {
+            std.debug.print("{} - {} - {}\n", .{ insn[j].address, insn[j].mnemonic, insn[j].op_str });
+        }
+        capstone.cs_free(insn, count);
+    } else std.debug.print("ERROR: Failed to disassemble given code!\n");
 }
 
 pub fn main() !u8 {
+    var handle: capstone.csh = undefined;
+    if (capstone.cs_open(capstone.CS_ARCH_X86, capstone.CS_MODE_64, &handle) != capstone.CS_ERR_OK) {
+        return 1;
+    }
+    defer _ = capstone.cs_close(&handle);
     const stdout = std.io.getStdOut().writer();
     var args = std.process.args();
     _ = args.next().?;
@@ -150,8 +171,8 @@ pub fn main() !u8 {
     const ident: []const u8 = c_ident[0..dst];
     const ei_class: EI_CLASS = @enumFromInt(ident[4]);
     try switch (ei_class) {
-        .ELFCLASS32 => insert_patch(EI_CLASS.ELFCLASS32, elf, 0x0003521a, test_patch),
-        .ELFCLASS64 => insert_patch(EI_CLASS.ELFCLASS64, elf, 0x0003521a, test_patch),
+        .ELFCLASS32 => insert_patch(EI_CLASS.ELFCLASS32, elf, handle, 0x37db0, test_patch),
+        .ELFCLASS64 => insert_patch(EI_CLASS.ELFCLASS64, elf, handle, 0x37db0, test_patch),
     };
     return 0;
 }
