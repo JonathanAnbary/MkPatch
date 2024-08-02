@@ -1,6 +1,7 @@
 const std = @import("std");
 const libelf = @cImport(@cInclude("libelf.h"));
 const capstone = @cImport(@cInclude("capstone/capstone.h"));
+const keystone = @cImport(@cInclude("keystone.h"));
 
 fn kind_string(kind: c_uint) []const u8 {
     return switch (kind) {
@@ -99,7 +100,14 @@ fn get_offset_phdr(comptime ei_class: EI_CLASS, elf: *libelf.Elf, off: ElfOffset
     return Error.SegmentNotFound;
 }
 
-fn insert_patch(comptime ei_class: EI_CLASS, elf: *libelf.Elf, cs_handle: capstone.csh, off: ElfOffset(ei_class), patch: []const u8) !void {
+fn insert_patch(
+    comptime ei_class: EI_CLASS,
+    elf: *libelf.Elf,
+    cs_handle: capstone.csh,
+    ksh: ?*keystone.ks_engine,
+    off: ElfOffset(ei_class),
+    patch: []const u8,
+) !void {
     _ = patch;
     // const phdr: *ElfPhdr(ei_class) = try get_offset_phdr(ei_class, elf, off);
     // std.debug.print("phdr = {*}\n", .{phdr});
@@ -117,27 +125,48 @@ fn insert_patch(comptime ei_class: EI_CLASS, elf: *libelf.Elf, cs_handle: capsto
     std.debug.print("{x}\n", .{sec_data[0..10]});
     const parsed_shdr = elf_getshdr(ei_class, scn).?;
     std.debug.print("parsed_shdr.sh_offset - {x}\n", .{parsed_shdr.sh_offset});
-    std.debug.print("off - {x}\n", .{off});
-    std.debug.print("{x}\n", .{off - parsed_shdr.sh_offset});
-    std.debug.print("{x}\n", .{sec_data[off - parsed_shdr.sh_offset .. 10 + off - parsed_shdr.sh_offset]});
-    std.debug.print("", .{});
-    const insn: [*][*]capstone.cs_insn = undefined;
-    const count = capstone.cs_disasm(cs_handle, @as([*]const u8, @ptrCast(sec_data)), elf_data.d_size, 0x1000, 10, insn);
-
+    std.debug.print("off = {x}\n", .{off});
+    std.debug.print("off - parsed_shdr.sh_offset = {x}\n", .{off - parsed_shdr.sh_offset});
+    std.debug.print("sec_data[off - parsed_shdr.sh_offset .. 10 + off - parsed_shdr.sh_offset] = {x}\n", .{sec_data[off - parsed_shdr.sh_offset .. 10 + off - parsed_shdr.sh_offset]});
+    var insn: [*c]capstone.cs_insn = undefined;
+    const count = capstone.cs_disasm(
+        cs_handle,
+        @as([*]const u8, @ptrCast(sec_data[off - parsed_shdr.sh_offset ..])),
+        elf_data.d_size - (off - parsed_shdr.sh_offset),
+        0,
+        1,
+        @as([*c][*c]capstone.cs_insn, @ptrCast(&insn)),
+    );
+    std.debug.print("count = {}\n", .{count});
     if (count > 0) {
         for (0..count) |j| {
-            std.debug.print("{} - {} - {}\n", .{ insn[j].address, insn[j].mnemonic, insn[j].op_str });
+            // std.debug.print("{}\n", .{insn[j]});
+            std.debug.print("{} - {s} - {s}\n", .{ insn[j].address, insn[j].mnemonic[0..std.mem.indexOf(u8, &insn[j].mnemonic, &[1]u8{0}).?], insn[j].op_str[0..std.mem.indexOf(u8, &insn[j].op_str, &[1]u8{0}).?] });
         }
         capstone.cs_free(insn, count);
-    } else std.debug.print("ERROR: Failed to disassemble given code!\n");
+    } else std.debug.print("ERROR: Failed to disassemble given code!\n", .{});
+    const code = "jmp 5";
+    var encode: ?[*]u8 = null;
+    var siz: usize = undefined;
+    var enc_count: usize = undefined;
+    if (keystone.ks_asm(ksh, code, 0, &encode, &siz, &enc_count) != keystone.KS_ERR_OK) {
+        std.debug.print("ERROR: ks_asm() failed & count = {}, error = {}\n", .{ enc_count, keystone.ks_errno(ksh) });
+    }
+    defer keystone.ks_free(encode);
+    std.debug.print("{s} = {x}\n", .{ code, encode.?[0..siz] });
 }
 
 pub fn main() !u8 {
-    var handle: capstone.csh = undefined;
-    if (capstone.cs_open(capstone.CS_ARCH_X86, capstone.CS_MODE_64, &handle) != capstone.CS_ERR_OK) {
+    var csh: capstone.csh = undefined;
+    if (capstone.cs_open(capstone.CS_ARCH_X86, capstone.CS_MODE_64, &csh) != capstone.CS_ERR_OK) {
         return 1;
     }
-    defer _ = capstone.cs_close(&handle);
+    defer _ = capstone.cs_close(&csh);
+    var ksh: ?*keystone.ks_engine = null;
+    if (keystone.ks_open(keystone.KS_ARCH_X86, keystone.KS_MODE_32, &ksh) != keystone.KS_ERR_OK) {
+        return 1;
+    }
+    defer _ = keystone.ks_close(ksh);
     const stdout = std.io.getStdOut().writer();
     var args = std.process.args();
     _ = args.next().?;
@@ -171,8 +200,8 @@ pub fn main() !u8 {
     const ident: []const u8 = c_ident[0..dst];
     const ei_class: EI_CLASS = @enumFromInt(ident[4]);
     try switch (ei_class) {
-        .ELFCLASS32 => insert_patch(EI_CLASS.ELFCLASS32, elf, handle, 0x37db0, test_patch),
-        .ELFCLASS64 => insert_patch(EI_CLASS.ELFCLASS64, elf, handle, 0x37db0, test_patch),
+        .ELFCLASS32 => insert_patch(EI_CLASS.ELFCLASS32, elf, csh, ksh, 0x37e0b, test_patch),
+        .ELFCLASS64 => insert_patch(EI_CLASS.ELFCLASS64, elf, csh, ksh, 0x37e0b, test_patch),
     };
     return 0;
 }

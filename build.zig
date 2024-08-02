@@ -38,9 +38,12 @@ pub fn build(b: *std.Build) void {
 
     exe.addObjectFile(b.path("lib/libelf/libelf.a"));
     exe.addObjectFile(b.path("lib/capstone-5.0/libcapstone.a"));
+    exe.addObjectFile(b.path("lib/keystone-9.2.0/libkeystone.a"));
     exe.addIncludePath(b.path("include/libelf/"));
     exe.addIncludePath(b.path("include/capstone-5.0/"));
+    exe.addIncludePath(b.path("include/keystone/"));
     exe.linkLibC();
+    exe.linkLibCpp();
 
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default
