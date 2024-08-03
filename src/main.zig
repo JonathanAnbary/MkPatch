@@ -141,10 +141,10 @@ fn insert_patch(
     cs_handle: capstone.csh,
     ksh: ?*keystone.ks_engine,
     off: ElfOffset(ei_class),
-    patch: []const u8,
+    patch_data: []const u8,
     patch_block: []u8,
 ) !void {
-    if (patch.len + JMP_BACK_SIZE + EXTRA_INSN_MAX_SIZE > patch_block.len) {
+    if (patch_data.len + JMP_BACK_SIZE + EXTRA_INSN_MAX_SIZE > patch_block.len) {
         unreachable;
     }
     // const phdr: *ElfPhdr(ei_class) = try get_offset_phdr(ei_class, elf, off);
@@ -169,9 +169,11 @@ fn insert_patch(
         )) {
             unreachable;
         }
-        @memcpy(patch_block[patch.len + moved_size ..], curr_data[0..insn.size]);
+        @memcpy(patch_block[patch_data.len + moved_size ..], curr_data[0..insn.size]);
         moved_size += insn.size;
     }
+    @memcpy(patch_block, patch_data);
+    const target: *libelf.Elf_Data = libelf.elf_newdata(scn).?;
 
     // const count = capstone.cs_disasm(
     //     cs_handle,
