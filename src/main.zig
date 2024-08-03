@@ -60,17 +60,6 @@ fn elf_getshdr(comptime ei_class: EI_CLASS, scn: *libelf.Elf_Scn) ?*ElfShdr(ei_c
         inline .ELFCLASS64 => libelf.elf64_getshdr(scn),
     };
 }
-fn get_offset_scn(comptime ei_class: EI_CLASS, elf: *libelf.Elf, off: ElfOffset(ei_class)) ?*libelf.Elf_Scn {
-    var curr_scn: ?*libelf.Elf_Scn = null;
-    while (libelf.elf_nextscn(elf, curr_scn)) |scn| : (curr_scn = scn) {
-        const parsed_shdr = elf_getshdr(ei_class, scn).?;
-        if ((off > parsed_shdr.sh_offset) and (off < (parsed_shdr.sh_offset + parsed_shdr.sh_size))) {
-            std.debug.print("parsed_shdr = {}", .{parsed_shdr});
-            return scn;
-        }
-    }
-    return null;
-}
 
 fn get_offset_phdr(comptime ei_class: EI_CLASS, elf: *libelf.Elf, off: ElfOffset(ei_class)) Error!*ElfPhdr(ei_class) {
     std.debug.print("here {}\n", .{ei_class});
@@ -100,6 +89,52 @@ fn get_offset_phdr(comptime ei_class: EI_CLASS, elf: *libelf.Elf, off: ElfOffset
     return Error.SegmentNotFound;
 }
 
+fn get_off_scn(comptime ei_class: EI_CLASS, elf: *libelf.Elf, off: ElfOffset(ei_class)) ?*libelf.Elf_Scn {
+    var curr_scn: ?*libelf.Elf_Scn = null;
+    while (libelf.elf_nextscn(elf, curr_scn)) |scn| : (curr_scn = scn) {
+        const parsed_shdr = elf_getshdr(ei_class, scn) orelse {
+            return Error.SectionNotFound;
+        };
+        if ((off > parsed_shdr.sh_offset) and (off < (parsed_shdr.sh_offset + parsed_shdr.sh_size))) {
+            return scn;
+        }
+    }
+    return null;
+}
+
+fn make_off_scn(comptime ei_class: EI_CLASS, elf: *libelf.Elf, off: ElfOffset(ei_class)) *libelf.Elf_Scn {
+    const scn: *libelf.Elf_Scn = libelf.elf_newscn(elf) orelse {
+        std.debug.print("{s}\n", .{libelf.elf_errmsg(libelf.elf_errno)});
+        unreachable;
+    };
+    const shdr: *ElfShdr(ei_class) = elf_getshdr(ei_class, scn) orelse {
+        std.debug.print("{s}\n", .{libelf.elf_errmsg(libelf.elf_errno)});
+        unreachable;
+    };
+
+    shdr.sh_name = 0;
+    shdr.sh_type = libelf.SHT_PROGBITS;
+    shdr.sh_flags = libelf.SHF_EXECINSTR | libelf.SHF_ALLOC;
+    shdr.sh_offset = off;
+    shdr.sh_size = 0x100;
+
+    return scn;
+}
+
+fn get_scn_off_data(comptime ei_class: EI_CLASS, scn: *libelf.Elf_Scn, off: ElfOffset(ei_class)) ?*libelf.Elf_Data {
+    const shdr: *ElfShdr(ei_class) = elf_getshdr(ei_class, scn) orelse {
+        std.debug.print("{s}\n", .{libelf.elf_errmsg(libelf.elf_errno)});
+        unreachable;
+    };
+    var curr_data: ?*libelf.Elf_Data = null;
+    while (libelf.elf_getdata(scn, curr_data)) |data| : (curr_data = data) {
+        if ((off > data.d_off + shdr.sh_addr) and (off < (data.d_off + shdr.sh_addr + data.d_size))) {
+            return data;
+        }
+    }
+    return null;
+}
+
 fn insert_patch(
     comptime ei_class: EI_CLASS,
     elf: *libelf.Elf,
@@ -107,44 +142,53 @@ fn insert_patch(
     ksh: ?*keystone.ks_engine,
     off: ElfOffset(ei_class),
     patch: []const u8,
+    patch_block: []u8,
 ) !void {
-    _ = patch;
+    if (patch.len + JMP_BACK_SIZE + EXTRA_INSN_MAX_SIZE > patch_block.len) {
+        unreachable;
+    }
     // const phdr: *ElfPhdr(ei_class) = try get_offset_phdr(ei_class, elf, off);
     // std.debug.print("phdr = {*}\n", .{phdr});
-    const scn: *libelf.Elf_Scn = get_offset_scn(ei_class, elf, off).?;
-    std.debug.print("scn = {}\n", .{scn});
-    std.debug.print("index = {}\n", .{libelf.elf_ndxscn(scn)});
-    const elf_data: *libelf.Elf_Data = libelf.elf_getdata(scn, null).?;
-    std.debug.print("{}\n", .{elf_data});
-    std.debug.print("ELF_T_BYTE = {}\n", .{libelf.ELF_T_BYTE});
-    if (elf_data.d_type != libelf.ELF_T_BYTE) {
+    const scn: *libelf.Elf_Scn = get_off_scn(ei_class, elf, off) orelse make_off_scn(ei_class, elf, off);
+    const off_data: *libelf.Elf_Data = get_scn_off_data(ei_class, scn, off).?;
+    if (off_data.d_type != libelf.ELF_T_BYTE) {
         return Error.NotPatchingNotBytes;
     }
-    // std.debug.print("d_buf = {}\n", .{elf_data.d_buf.?});
-    const sec_data: []const u8 = @as([*]const u8, @ptrCast(elf_data.d_buf.?))[0..elf_data.d_size];
-    std.debug.print("{x}\n", .{sec_data[0..10]});
-    const parsed_shdr = elf_getshdr(ei_class, scn).?;
-    std.debug.print("parsed_shdr.sh_offset - {x}\n", .{parsed_shdr.sh_offset});
-    std.debug.print("off = {x}\n", .{off});
-    std.debug.print("off - parsed_shdr.sh_offset = {x}\n", .{off - parsed_shdr.sh_offset});
-    std.debug.print("sec_data[off - parsed_shdr.sh_offset .. 10 + off - parsed_shdr.sh_offset] = {x}\n", .{sec_data[off - parsed_shdr.sh_offset .. 10 + off - parsed_shdr.sh_offset]});
-    var insn: [*c]capstone.cs_insn = undefined;
-    const count = capstone.cs_disasm(
-        cs_handle,
-        @as([*]const u8, @ptrCast(sec_data[off - parsed_shdr.sh_offset ..])),
-        elf_data.d_size - (off - parsed_shdr.sh_offset),
-        0,
-        1,
-        @as([*c][*c]capstone.cs_insn, @ptrCast(&insn)),
-    );
-    std.debug.print("count = {}\n", .{count});
-    if (count > 0) {
-        for (0..count) |j| {
-            // std.debug.print("{}\n", .{insn[j]});
-            std.debug.print("{} - {s} - {s}\n", .{ insn[j].address, insn[j].mnemonic[0..std.mem.indexOf(u8, &insn[j].mnemonic, &[1]u8{0}).?], insn[j].op_str[0..std.mem.indexOf(u8, &insn[j].op_str, &[1]u8{0}).?] });
+    const patch_target_data: []const u8 = @as([*]const u8, @ptrCast(off_data.d_buf.?))[0..off_data.d_size];
+    const shdr = elf_getshdr(ei_class, scn).?;
+    var insn: *capstone.cs_insn = undefined;
+    var moved_size = 0; // the number of bytes to move to the jmp target.
+    while (moved_size < JMP_PATCH_SIZE) {
+        const curr_data = patch_target_data[off + moved_size - shdr.sh_offset - off_data.d_off ..];
+        if (!capstone.cs_disasm_iter(
+            cs_handle,
+            @as([*]const u8, @ptrCast(curr_data)),
+            &curr_data.len,
+            0, // dont know the address, not sure it matters.
+            &insn,
+        )) {
+            unreachable;
         }
-        capstone.cs_free(insn, count);
-    } else std.debug.print("ERROR: Failed to disassemble given code!\n", .{});
+        @memcpy(patch_block[patch.len + moved_size ..], curr_data[0..insn.size]);
+        moved_size += insn.size;
+    }
+
+    // const count = capstone.cs_disasm(
+    //     cs_handle,
+    //     @as([*]const u8, @ptrCast(curr_data[off - shdr.sh_offset ..])),
+    //     off_data.d_size - (off - shdr.sh_offset),
+    //     0,
+    //     1,
+    //     @as([*c][*c]capstone.cs_insn, @ptrCast(&insn)),
+    // );
+    // if (count > 0) {
+    //     for (0..count) |j| {
+    //         // std.debug.print("{}\n", .{insn[j]});
+    //         std.debug.print("{} - {s} - {s}\n", .{ insn[j].address, insn[j].mnemonic[0..std.mem.indexOf(u8, &insn[j].mnemonic, &[1]u8{0}).?], insn[j].op_str[0..std.mem.indexOf(u8, &insn[j].op_str, &[1]u8{0}).?] });
+    //     }
+    //     capstone.cs_free(insn, count);
+    // } else std.debug.print("ERROR: Failed to disassemble given code!\n", .{});
+
     const code = "jmp 5";
     var encode: ?[*]u8 = null;
     var siz: usize = undefined;
