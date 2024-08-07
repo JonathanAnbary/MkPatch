@@ -137,6 +137,132 @@ fn get_scn_off_data(comptime ei_class: EI_CLASS, scn: *libelf.Elf_Scn, off: ElfO
     return null;
 }
 
+const SegProximity: type = struct {
+    seg_idx: u16,
+    is_end: bool,
+};
+
+fn get_off(seg_prox: SegProximity, ei_class: EI_CLASS, phdr_table: []ElfPhdr(ei_class)) u64 {
+    if (seg_prox.is_end) {
+        return phdr_table[seg_prox.seg_idx].p_offset + phdr_table[seg_prox.seg_idx].p_filesz;
+    }
+    return phdr_table[seg_prox.seg_idx].p_offset;
+}
+
+fn get_gap_size(seg_prox: SegProximity, ei_class: EI_CLASS, phdr_table: []ElfPhdr(ei_class)) u64 {
+    const start: u64 = blk: {
+        if (seg_prox.is_end) {
+            break :blk get_off(seg_prox, ei_class, phdr_table);
+        } else if (seg_prox.seg_idx != 0) {
+            break :blk get_off(SegProximity{ .seg_idx = seg_prox.seg_idx - 1, .is_end = true }, ei_class, phdr_table);
+        } else {
+            break :blk 0;
+        }
+    };
+    const end: u64 = blk: {
+        if (!seg_prox.is_end) {
+            break :blk get_off(seg_prox, ei_class, phdr_table);
+        } else if (seg_prox.seg_idx != (phdr_table.len - 1)) {
+            break :blk get_off(SegProximity{ .seg_idx = seg_prox.seg_idx + 1, .is_end = false }, ei_class, phdr_table);
+        } else {
+            break :blk std.math.maxInt(u64);
+        }
+    };
+    return end - start;
+}
+
+fn get_proximity_seg(ei_class: EI_CLASS, phdr_table: []ElfPhdr(ei_class), wanted_off_proximity: u64) SegProximity {
+    var low: SegProximity = .{ 0, false };
+    var high: SegProximity = .{ phdr_table.len - 1, true };
+    if (wanted_off_proximity < get_off(low, ei_class, phdr_table)) {
+        return low;
+    }
+    if (wanted_off_proximity > get_off(high, ei_class, phdr_table)) {
+        return high;
+    }
+    while (((high.seg_idx - low.seg_idx) > 1) or
+        (((high.seg_idx - low.seg_idx) == 1) and (high.is_end or !low.is_end)))
+    {
+        const mid_idx: u16 = (high.seg_idx * 2 + high.is_end + low.seg_idx * 2 + low.is_end) >> 2;
+        const mid: SegProximity = .{
+            .seg_idx = mid_idx >> 2,
+            .is_end = mid_idx % 2,
+        };
+        if (wanted_off_proximity < get_off(mid, ei_class, phdr_table)) {
+            high = mid;
+        } else if (wanted_off_proximity > get_off(mid, ei_class, phdr_table)) {
+            low = mid;
+        } else {
+            return mid;
+        }
+    }
+
+    if (wanted_off_proximity < ((get_off(low, ei_class, phdr_table) + get_off(high, ei_class, phdr_table)) >> 2)) {
+        return low;
+    }
+    return high;
+}
+
+fn get_lower(seg_prox: SegProximity) ?SegProximity {
+    if (seg_prox.is_end) {
+        return SegProximity{.seg_idx =seg_prox.seg_idx, .is_end =false};
+    } else if (seg_prox.seg_idx == 0) {
+        return null;
+    }
+    return SegProximity{.seg_idx =seg_prox.seg_idx - 1, .is_end =true};
+}
+
+fn get_higher(seg_prox: SegProximity, lim: u16) ?SegProximity {
+    if (!seg_prox.is_end) {
+        return SegProximity{.seg_idx =seg_prox.seg_idx, .is_end =true};
+    } else if (seg_prox.seg_idx == lim) {
+        return null;
+    }
+    return SegProximity{.seg_idx =seg_prox.seg_idx + 1, .is_end =false};
+}
+
+fn get_patch_block_buffer(ei_class: EI_CLASS, elf: *libelf.Elf, wanted_size: u64, wanted_proximity: u64) *libelf.Elf_Data {
+    const temp: [*]ElfPhdr(ei_class) = elf_getphdr(ei_class, elf) orelse {
+        std.debug.print("{s}\n", .{libelf.elf_errmsg(libelf.elf_errno())});
+        unreachable;
+    };
+
+    var phdr_num: usize = undefined;
+    if (libelf.elf_getphdrnum(elf, &phdr_num) == -1) {
+        unreachable;
+    }
+    const phdr_table: []ElfPhdr(ei_class) = temp[0..phdr_num];
+    const prox_seg: SegProximity = get_proximity_seg(ei_class, phdr_table, wanted_proximity);
+    var high_seg: SegProximity = proximity_phdr;
+    var low_seg: SegProximity = proximity_phdr;
+    var close_seg: SegProximity = proximity_phdr;
+    while (wanted_size > get_gap_size(curr_proximity_phdr, ei_class, phdr_table)) {
+        var lower_seg = get_lower(low_seg);
+        var higher_seg = get_higher(high_seg, phdr_table.len - 1);
+        if (std.math
+        if (distance < 0) {
+
+
+        }
+
+    }
+    std.debug.print("{}\n", .{phdr_num});
+    // for now I am assuming that that segments are sequntial in memory.
+    for (phdr_table) |*phdr| {
+        std.debug.print(
+            \\off - {}
+            \\phdr.p_offset - {}
+            \\phdr.p_filesz - {}
+            \\(phdr.p_offset + phdr.p_filesz) - {}
+            \\
+        , .{ off, phdr.p_offset, phdr.p_filesz, (phdr.p_offset + phdr.p_filesz) });
+        if (off < (phdr.p_offset + phdr.p_filesz)) {
+            return phdr;
+        }
+    }
+    return Error.SegmentNotFound;
+}
+
 const JMP_BACK_SIZE = 10;
 const EXTRA_INSN_MAX_SIZE = 10;
 const JMP_PATCH_SIZE = 10;
@@ -156,6 +282,7 @@ fn insert_patch(
     }
     const phdr: *ElfPhdr(ei_class) = try get_offset_phdr(ei_class, elf, off);
     std.debug.print("phdr = {}\n", .{phdr});
+    const phdr_new_data_off = phdr.p_offset + phdr.p_filesz;
     phdr.p_filesz += @as(u32, @intCast(patch_block.len));
     phdr.p_memsz += @as(u32, @intCast(patch_block.len));
 
@@ -186,7 +313,8 @@ fn insert_patch(
     const moved_insn_size = patch_end_off - patch_sec_off;
     @memcpy(patch_block[0..patch_data.len], patch_data);
     @memcpy(patch_block[patch_data.len .. patch_data.len + moved_insn_size], patch_target_data[0..moved_insn_size]);
-    const target_elf_data: *libelf.Elf_Data = libelf.elf_newdata(scn).?;
+    const patch_scn: *libelf.Elf_Scn = get_off_scn(ei_class, elf, phdr_new_data_off) orelse make_off_scn(ei_class, elf, phdr_new_data_off);
+    const target_elf_data: *libelf.Elf_Data = get_scn_off_data(ei_class, patch_scn, off) orelse libelf.elf_newdata(scn).?;
     var prev_elf_data: *libelf.Elf_Data = off_data;
     while (libelf.elf_getdata(scn, prev_elf_data)) |next_data| {
         if (next_data == target_elf_data) {
