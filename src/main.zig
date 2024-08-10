@@ -117,11 +117,7 @@ fn make_off_scn(comptime ei_class: EI_CLASS, elf: *libelf.Elf, off: ElfOff(ei_cl
     return scn;
 }
 
-fn get_scn_off_data(comptime ei_class: EI_CLASS, scn: *libelf.Elf_Scn, off: ElfOff(ei_class)) ?*libelf.Elf_Data {
-    const shdr: *ElfShdr(ei_class) = elf_getshdr(ei_class, scn) orelse {
-        std.debug.print("{s}\n", .{libelf.elf_errmsg(libelf.elf_errno())});
-        unreachable;
-    };
+fn get_scn_off_data(comptime ei_class: EI_CLASS, scn: *libelf.Elf_Scn, shdr: *ElfShdr(ei_class), off: ElfOff(ei_class)) ?*libelf.Elf_Data {
     var curr_data: ?*libelf.Elf_Data = null;
     while (@as(?*libelf.Elf_Data, @ptrCast(libelf.elf_getdata(scn, curr_data)))) |data| : (curr_data = data) {
         if ((off > data.d_off + @as(isize, @intCast(shdr.sh_offset))) and
@@ -366,95 +362,103 @@ fn off_to_addr(comptime ei_class: EI_CLASS, elf: *libelf.Elf, off: ElfOff(ei_cla
     return off - phdr.p_offset + phdr.p_vaddr;
 }
 
-const JMP_BACK_SIZE = 10;
-const EXTRA_INSN_MAX_SIZE = 10;
-const JMP_PATCH_SIZE = 10;
-const JMP_FAR_ASM_SIZE = 20;
-
-fn insert_patch(
-    comptime ei_class: EI_CLASS,
-    elf: *libelf.Elf,
-    cs_handle: capstone.csh,
-    ksh: ?*keystone.ks_engine,
-    off: ElfOff(ei_class),
-    patch_data: []const u8,
-    patch_block: []u8,
-) !void {
-    if (patch_data.len + JMP_BACK_SIZE + EXTRA_INSN_MAX_SIZE > patch_block.len) {
-        unreachable;
-    }
-    const addr: ElfAddr(ei_class) = off_to_addr(ei_class, elf, off).?;
-    const scn: *libelf.Elf_Scn = get_off_scn(ei_class, elf, off) orelse make_off_scn(ei_class, elf, off);
-    const off_data: *libelf.Elf_Data = get_scn_off_data(ei_class, scn, off).?;
-    if (off_data.d_type != libelf.ELF_T_BYTE) {
-        unreachable;
-    }
+fn get_off_data(comptime ei_class: EI_CLASS, elf: *libelf.Elf, off: ElfOff(ei_class)) ?[]u8 {
+    const scn: *libelf.Elf_Scn = get_off_scn(ei_class, elf, off).?;
     const shdr = elf_getshdr(ei_class, scn).?;
+    // std.debug.print("{s}\n", .{libelf.elf_errmsg(libelf.elf_errno())});
+    const off_data: *libelf.Elf_Data = get_scn_off_data(ei_class, scn, shdr, off).?;
+    // if (off_data.d_type != libelf.ELF_T_BYTE) {
+    //     unreachable;
+    // }
     const patch_sec_off: ElfOff(ei_class) = off - shdr.sh_offset;
-    var patch_loc_data: []u8 = @as([*]u8, @ptrCast(off_data.d_buf.?))[patch_sec_off - @as(u64, @intCast(off_data.d_off)) .. off_data.d_size];
-    const insn: *capstone.cs_insn = capstone.cs_malloc(cs_handle);
+    const patch_loc_data: []u8 = @as([*]u8, @ptrCast(off_data.d_buf.?))[patch_sec_off - @as(u64, @intCast(off_data.d_off)) .. off_data.d_size];
+    return patch_loc_data;
+}
+
+// this is kind of grossly inefficient but I cant think of how to make it better.
+fn calc_min_move(csh: capstone.csh, insns: []const u8, wanted_size: u64) u64 {
+    const insn: *capstone.cs_insn = capstone.cs_malloc(csh);
     defer capstone.cs_free(insn, 1);
-    var curr_code = patch_loc_data;
-    var curr_size = patch_loc_data.len - (off - shdr.sh_offset - @as(u64, @intCast(off_data.d_off)));
-    var patch_end_off: u64 = patch_sec_off;
-    while ((patch_end_off - patch_sec_off) < JMP_PATCH_SIZE) {
+    var curr_code = insns;
+    var curr_size = insns.len;
+    const start: u64 = 0;
+    var end: u64 = start;
+    while ((end - start) < wanted_size) {
         if (!capstone.cs_disasm_iter(
-            cs_handle,
+            csh,
             @as([*c][*c]const u8, @ptrCast(&curr_code)),
             &curr_size,
-            &patch_end_off,
+            &end,
             insn,
         )) {
             unreachable;
         }
     }
-    const moved_insn_size: ElfOff(ei_class) = @as(u32, @intCast(patch_end_off)) - patch_sec_off;
-    var elf_patch_block_data = get_patch_block_buffer(ei_class, elf, @as(u32, @intCast(patch_data.len)) + moved_insn_size + JMP_BACK_SIZE).?;
-    elf_patch_block_data.block.d_buf = @ptrCast(patch_block);
-    @memcpy(patch_block[0..patch_data.len], patch_data);
-    @memcpy(patch_block[patch_data.len .. patch_data.len + moved_insn_size], patch_loc_data[0..moved_insn_size]);
 
+    return end - start;
+}
+
+fn insert_jmp(ksh: *keystone.ks_engine, to_patch: []u8, target_addr: i65) !usize {
+    const max_jmp_asm_size: comptime_int = comptime blk: {
+        break :blk "jmp ".len + std.fmt.count("{}", .{std.math.minInt(i128)}) + 1;
+    };
     var encode: ?[*]u8 = null;
     var siz: usize = undefined;
     var enc_count: usize = undefined;
-    var jmp_far_buf: [JMP_FAR_ASM_SIZE]u8 = undefined;
-    const jmp_to_patch = try std.fmt.bufPrintZ(&jmp_far_buf, "jmp {};", .{elf_patch_block_data.addr - addr});
-    {
-        if (keystone.ks_asm(ksh, @as(?[*]const u8, @ptrCast(jmp_to_patch)), 0, &encode, &siz, &enc_count) != keystone.KS_ERR_OK) {
-            std.debug.print("ERROR: ks_asm() failed & count = {}, error = {}\n", .{ enc_count, keystone.ks_errno(ksh) });
-            unreachable;
-        }
-        defer keystone.ks_free(encode);
-        std.debug.print("jmp_to_patch ({s}) = {x}\n", .{ jmp_to_patch, encode.?[0..siz] });
-        @memcpy(patch_loc_data[0..siz], encode.?[0..siz]);
-    }
-
-    const jmp_back_insn_addr = elf_patch_block_data.addr + patch_data.len + moved_insn_size;
-    const jmp_back_target_addr = addr + moved_insn_size;
-
-    std.debug.print("jmp_back_addr = {x}\naddr = {x}\nmoved_insn_size = {x}\n", .{ jmp_back_insn_addr, addr, moved_insn_size });
-    const jmp_back = try std.fmt.bufPrintZ(&jmp_far_buf, "jmp {};", .{@as(i128, @intCast(jmp_back_target_addr)) - jmp_back_insn_addr});
-    std.debug.print("code_jmp_back = {s}\n", .{jmp_back});
-    // const temp = "jmp -763279;";
-    if (keystone.ks_asm(ksh, @as(?[*]const u8, @ptrCast(jmp_back)), 0, &encode, &siz, &enc_count) != keystone.KS_ERR_OK) {
-        std.debug.print("ERROR: ks_asm() failed & count = {}, error = {}\n", .{ enc_count, keystone.ks_errno(ksh) });
+    var jmp_insn_asm_buf: [max_jmp_asm_size]u8 = undefined;
+    const jmp_to_patch = try std.fmt.bufPrintZ(&jmp_insn_asm_buf, "jmp {};", .{target_addr});
+    if (keystone.ks_asm(ksh, @as(?[*]const u8, @ptrCast(jmp_to_patch)), 0, &encode, &siz, &enc_count) != keystone.KS_ERR_OK) {
+        // std.debug.print("ERROR: ks_asm() failed & count = {}, error = {}\n", .{ enc_count, keystone.ks_errno(ksh) });
         unreachable;
     }
     defer keystone.ks_free(encode);
-    std.debug.print("jmp_to_patch ({s}) = {x}\n", .{ jmp_back, encode.?[0..siz] });
-    @memcpy(patch_block[patch_data.len + moved_insn_size .. patch_data.len + moved_insn_size + siz], encode.?[0..siz]);
+    std.debug.print("jmp_to_patch ({s}) = {x}\n", .{ jmp_to_patch, encode.?[0..siz] });
+    @memcpy(to_patch[0..siz], encode.?[0..siz]);
+    return siz;
+}
+
+fn insert_patch(
+    comptime ei_class: EI_CLASS,
+    elf: *libelf.Elf,
+    csh: capstone.csh,
+    ksh: *keystone.ks_engine,
+    off: ElfOff(ei_class),
+    patch_data: []const u8,
+    patch_block: []u8,
+) !void {
+    const max_jmp_insn_size: comptime_int = 1 + @sizeOf(ElfOff(ei_class)); // this is total guess work.
+    const extra_insn_max_size: comptime_int = max_jmp_insn_size + 10; // this is total guess work.
+    if (patch_data.len + max_jmp_insn_size + extra_insn_max_size > patch_block.len) {
+        unreachable;
+    }
+    const addr: ElfAddr(ei_class) = off_to_addr(ei_class, elf, off).?;
+    const patch_off_data: []u8 = get_off_data(ei_class, elf, off).?;
+    const move_insn_size: ElfOff(ei_class) = @intCast(calc_min_move(csh, patch_off_data, max_jmp_insn_size));
+    var elf_patch_block_data = get_patch_block_buffer(ei_class, elf, @as(u32, @intCast(patch_data.len)) + move_insn_size + max_jmp_insn_size).?;
+    elf_patch_block_data.block.d_buf = @ptrCast(patch_block);
+    @memcpy(patch_block[0..patch_data.len], patch_data);
+    @memcpy(patch_block[patch_data.len .. patch_data.len + move_insn_size], patch_off_data[0..move_insn_size]);
+
+    const rel_change = elf_patch_block_data.addr - addr;
+    _ = try insert_jmp(ksh, patch_off_data, rel_change);
+    const jmp_back_insn_addr = elf_patch_block_data.addr + patch_data.len + move_insn_size;
+    const jmp_back_target_addr = addr + move_insn_size;
+
+    std.debug.print("jmp_back_addr = {x}\naddr = {x}\nmoved_insn_size = {x}\n", .{ jmp_back_insn_addr, addr, move_insn_size });
+    _ = try insert_jmp(ksh, patch_block[patch_data.len + move_insn_size ..], @as(i65, @intCast(jmp_back_target_addr)) - jmp_back_insn_addr);
 }
 
 pub fn main() !u8 {
     var csh: capstone.csh = undefined;
     if (capstone.cs_open(capstone.CS_ARCH_X86, capstone.CS_MODE_64, &csh) != capstone.CS_ERR_OK) {
-        return 1;
+        unreachable;
     }
     defer _ = capstone.cs_close(&csh);
-    var ksh: ?*keystone.ks_engine = null;
-    if (keystone.ks_open(keystone.KS_ARCH_X86, keystone.KS_MODE_32, &ksh) != keystone.KS_ERR_OK) {
-        return 1;
+    var temp_ksh: ?*keystone.ks_engine = null;
+    if ((keystone.ks_open(keystone.KS_ARCH_X86, keystone.KS_MODE_32, &temp_ksh) != keystone.KS_ERR_OK) or (temp_ksh == null)) {
+        unreachable;
     }
+    const ksh: *keystone.ks_engine = temp_ksh.?;
     defer _ = keystone.ks_close(ksh);
     const stdout = std.io.getStdOut().writer();
     var args = std.process.args();
@@ -480,7 +484,7 @@ pub fn main() !u8 {
     if (kind != libelf.ELF_K_ELF) {
         return 1;
     }
-    const test_patch = "\x90" ** 10;
+    const test_patch = "";
     var dst: usize = undefined;
     const c_ident: [*]const u8 = libelf.elf_getident(elf, &dst) orelse {
         std.debug.print("{s}\n", .{libelf.elf_errmsg(libelf.elf_errno())});
@@ -490,8 +494,8 @@ pub fn main() !u8 {
     const ei_class: EI_CLASS = @enumFromInt(ident[4]);
     var patch_buff: [test_patch.len + 50]u8 = undefined;
     try switch (ei_class) {
-        .ELFCLASS32 => insert_patch(EI_CLASS.ELFCLASS32, elf, csh, ksh, 0x6c1f9a, test_patch, &patch_buff),
-        .ELFCLASS64 => insert_patch(EI_CLASS.ELFCLASS64, elf, csh, ksh, 0x6c1f9a, test_patch, &patch_buff),
+        .ELFCLASS32 => insert_patch(EI_CLASS.ELFCLASS32, elf, csh, ksh, 0x11c1, test_patch, &patch_buff),
+        .ELFCLASS64 => insert_patch(EI_CLASS.ELFCLASS64, elf, csh, ksh, 0x11c1, test_patch, &patch_buff),
     };
     const temp = libelf.elf_update(elf, libelf.ELF_C_WRITE);
     std.debug.print("image size = {}\n", .{temp});
