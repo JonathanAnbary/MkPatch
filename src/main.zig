@@ -1,10 +1,10 @@
 const std = @import("std");
-// const libelf = @import("../translated-include/libelf/libelf.zig");
-// const capstone = @import("../translated-include/capstone-5.0/capstone/capstone.zig");
-// const keystone = @import("../translated-include/keystone/keystone.zig");
-const libelf = @cImport(@cInclude("libelf.h"));
-const capstone = @cImport(@cInclude("capstone/capstone.h"));
-const keystone = @cImport(@cInclude("keystone.h"));
+const libelf = @import("../translated-include/libelf/libelf.zig");
+const capstone = @import("../translated-include/capstone-5.0/capstone/capstone.zig");
+const keystone = @import("../translated-include/keystone/keystone.zig");
+// const libelf = @cImport(@cInclude("libelf.h"));
+// const capstone = @cImport(@cInclude("capstone/capstone.h"));
+// const keystone = @cImport(@cInclude("keystone.h"));
 
 fn kind_string(kind: c_uint) []const u8 {
     return switch (kind) {
@@ -129,7 +129,7 @@ fn get_scn_off_data(comptime ei_class: EI_CLASS, scn: *libelf.Elf_Scn, shdr: *El
     return null;
 }
 
-const SegProximity: type = struct {
+const SegEdge: type = struct {
     seg_idx: u16,
     is_end: bool,
 };
@@ -148,12 +148,12 @@ fn get_off(seg_idx: u32, is_end: bool, ei_class: EI_CLASS, phdr_table: []ElfPhdr
     return phdr_table[seg_idx].p_offset;
 }
 
-fn get_gap_size(seg_prox: SegProximity, ei_class: EI_CLASS, phdr_table: []ElfPhdr(ei_class)) u64 {
+fn get_gap_size(seg_prox: SegEdge, ei_class: EI_CLASS, phdr_table: []ElfPhdr(ei_class)) u64 {
     const start: u64 = blk: {
         if (seg_prox.is_end) {
             break :blk get_off(seg_prox, ei_class, phdr_table);
         } else if (seg_prox.seg_idx != 0) {
-            break :blk get_off(SegProximity{ .seg_idx = seg_prox.seg_idx - 1, .is_end = true }, ei_class, phdr_table);
+            break :blk get_off(SegEdge{ .seg_idx = seg_prox.seg_idx - 1, .is_end = true }, ei_class, phdr_table);
         } else {
             break :blk 0;
         }
@@ -162,7 +162,7 @@ fn get_gap_size(seg_prox: SegProximity, ei_class: EI_CLASS, phdr_table: []ElfPhd
         if (!seg_prox.is_end) {
             break :blk get_off(seg_prox, ei_class, phdr_table);
         } else if (seg_prox.seg_idx != (phdr_table.len - 1)) {
-            break :blk get_off(SegProximity{ .seg_idx = seg_prox.seg_idx + 1, .is_end = false }, ei_class, phdr_table);
+            break :blk get_off(SegEdge{ .seg_idx = seg_prox.seg_idx + 1, .is_end = false }, ei_class, phdr_table);
         } else {
             break :blk std.math.maxInt(u64);
         }
@@ -170,102 +170,41 @@ fn get_gap_size(seg_prox: SegProximity, ei_class: EI_CLASS, phdr_table: []ElfPhd
     return end - start;
 }
 
-fn find(start: u32, end: u32, jump: i32, comptime ei_class: EI_CLASS, phdr_table: []ElfPhdr(ei_class), comptime cond: fn (phdr: ElfPhdr(ei_class)) bool) ?u32 {
+fn is_code_seg(comptime ei_class: EI_CLASS, phdr: ElfPhdr(ei_class)) bool {
+    return ((phdr.p_type == libelf.PT_LOAD) and (phdr.p_flags & (libelf.PF_R | libelf.PF_X) != 0));
+}
+
+fn is_load(comptime ei_class: EI_CLASS, phdr: ElfPhdr(ei_class)) bool {
+    return phdr.p_type == libelf.PT_LOAD;
+}
+
+fn find(start: u16, end: u16, jump: i32, comptime ei_class: EI_CLASS, phdr_table: []ElfPhdr(ei_class), comptime cond: fn (ei_class2: EI_CLASS, phdr: ElfPhdr(ei_class)) bool) ?u16 {
     std.debug.assert(jump != 0);
     std.debug.assert((start < end) == (jump > 0));
-    var i: u32 = start;
-    while (i != end) : (i = @as(u32, @intCast(@as(i64, @intCast(i)) + jump))) {
-        if (cond(phdr_table[i])) {
+    var i: u16 = start;
+    while (i != end) : (i = @as(u16, @intCast(@as(i32, @intCast(i)) + jump))) {
+        if (cond(ei_class, phdr_table[i])) {
             return i;
         }
     }
     return null;
 }
 
-fn gen_is_load(comptime ei_class: EI_CLASS) fn (phdr: ElfPhdr(ei_class)) bool {
-    return struct {
-        fn is_load(phdr: ElfPhdr(ei_class)) bool {
-            std.debug.print("(phdr.p_type == libelf.PT_LOAD) = {}\n(phdr.p_flags & (libelf.pf_r | libelf.pf_x) != 0) = {}\n", .{ (phdr.p_type == libelf.PT_LOAD), (phdr.p_type == libelf.PT_LOAD) });
-            return ((phdr.p_type == libelf.PT_LOAD) and (phdr.p_flags & (libelf.PF_R | libelf.PF_X) != 0));
-        }
-    }.is_load;
-}
-
-// fn get_proximity_seg(ei_class: EI_CLASS, phdr_table: []ElfPhdr(ei_class), wanted_addr_prox: u64) SegProximity {
-//     var curr: u32 = find(0, phdr_table.len - 1, 1, ei_class, phdr_table, is_load).?;
-//     if (curr == phdr_table.len - 1) {
-//         return SegProximity{.seg_idx = curr, .is_end = (wanted_addr_prox > (phdr_table[curr].p_vaddr + (phdr_table[curr].p_memsz >> 2))),};
-//     }
-//     var maybe_next: ?u32 = find(seg_idx + 1, phdr_table.len - 1, 1, ei_class,phdr_table, is_load);
-//     while (maybe_next) |next| : (maybe_next = find(curr.seg_idx + 1, phdr_table.len - 1, 1, ei_class,phdr_table, is_load)) {
-//         if (wanted_addr_prox < ((get_addr(curr, true) + get_addr(next, false) ) >> 2)) {
-//             return SegProximity{.seg_idx = curr, .is_end = (wanted_addr_prox > (phdr_table[curr].p_vaddr + (phdr_table[curr].p_memsz >> 2))),};
-//         }
-//         curr = next;
-//     }
-//     return SegProximity{.seg_idx = curr, .is_end = true,};
-// }
-//
-// fn get_lower(seg_prox: SegProximity) ?SegProximity {
-//     if (seg_prox.is_end) {
-//         return SegProximity{ .seg_idx = seg_prox.seg_idx, .is_end = false };
-//     } else if (seg_prox.seg_idx == 0) {
-//         return null;
-//     }
-//     return SegProximity{ .seg_idx = seg_prox.seg_idx - 1, .is_end = true };
-// }
-//
-// fn get_higher(seg_prox: SegProximity, lim: u16) ?SegProximity {
-//     if (!seg_prox.is_end) {
-//         return SegProximity{ .seg_idx = seg_prox.seg_idx, .is_end = true };
-//     } else if (seg_prox.seg_idx == lim) {
-//         return null;
-//     }
-//     return SegProximity{ .seg_idx = seg_prox.seg_idx + 1, .is_end = false };
-// }
-
-// fn get_closest_gap(ei_class: EI_CLASS, phdr_table: []ElfPhdr, wanted_proximity: u64) SegProximity{
-//     const prox_seg: SegProximity = get_proximity_seg(ei_class, phdr_table, wanted_proximity);
-//     var high_seg: SegProximity = prox_seg;
-//     var low_seg: SegProximity = prox_seg;
-//     var close_seg: SegProximity = prox_seg;
-//     while (wanted_size > get_gap_size(close_seg, ei_class, phdr_table)) {
-//         const lower_seg = get_lower(low_seg);
-//         const higher_seg = get_higher(high_seg, phdr_table.len - 1);
-//         if (!lower_seg and !higher_seg) {
-//             return null;
-//         } else if (!lower_seg) {
-//             close_seg = higher_seg;
-//             high_seg = higher_seg;
-//         } else if (!higher_seg) {
-//             close_seg = lower_seg;
-//             low_seg = lower_seg;
-//         } else {
-//             const low_vaddr = get_addr(lower_seg, ei_class, phdr_table);
-//             const high_vaddr = get_addr(high_seg, ei_class, phdr_table);
-//             if (wanted_proximity < ((low_vaddr + high_vaddr) >> 2)) {
-//                 close_seg = lower_seg;
-//                 low_seg = lower_seg;
-//             } else {
-//                 close_seg = higher_seg;
-//                 high_seg = higher_seg;
-//             }
-//         }
-//     }
-// }
-
 const BlockInfo: type = struct {
     block: *libelf.Elf_Data,
     addr: u64,
 };
 
-fn adjust_segs(comptime ei_class: EI_CLASS, phdr_table: []ElfPhdr(ei_class), amount: ElfOff(ei_class)) void {
+fn adjust_segs_after(comptime ei_class: EI_CLASS, phdr_table: []ElfPhdr(ei_class), after: u64, amount: u64) void {
     for (phdr_table) |*phdr| {
-        phdr.p_offset += amount;
+        if (phdr.p_offset > after) {
+            phdr.p_offset += amount;
+        }
     }
 }
 
-fn adjust_secs_after(comptime ei_class: EI_CLASS, elf: *libelf.Elf, after: u64, amount: ElfOff(ei_class)) void {
+// dont know what would happend if there were a section crossing segment boundries.
+fn adjust_secs_after(comptime ei_class: EI_CLASS, elf: *libelf.Elf, after: u64, amount: u64) void {
     var shdrnum: usize = undefined;
     if (libelf.elf_getshdrnum(elf, &shdrnum) == -1) {
         unreachable;
@@ -279,11 +218,22 @@ fn adjust_secs_after(comptime ei_class: EI_CLASS, elf: *libelf.Elf, after: u64, 
     }
 }
 
-fn get_last_mem_seg(comptime ei_class: EI_CLASS, phdr_table: []ElfPhdr(ei_class)) ?u16 {
-    var max: u16 = @intCast(find(0, @as(u32, @intCast(phdr_table.len - 1)), 1, ei_class, phdr_table, gen_is_load(ei_class)) orelse return null);
+fn get_last_file_seg(comptime ei_class: EI_CLASS, phdr_table: []ElfPhdr(ei_class)) ?u16 {
+    var max: u16 = @intCast(find(0, @as(u32, @intCast(phdr_table.len - 1)), 1, ei_class, phdr_table, is_load) orelse return null);
     if (max == phdr_table.len - 1) return max;
     for (max + 1..phdr_table.len) |i| {
-        if ((gen_is_load(ei_class)(phdr_table[i])) and (phdr_table[i].p_vaddr > phdr_table[max].p_vaddr)) {
+        if (phdr_table[i].p_offset > phdr_table[max].p_offset) {
+            max = @intCast(i);
+        }
+    }
+    return max;
+}
+
+fn get_last_mem_seg(comptime ei_class: EI_CLASS, phdr_table: []ElfPhdr(ei_class)) ?u16 {
+    var max: u16 = @intCast(find(0, @as(u32, @intCast(phdr_table.len - 1)), 1, ei_class, phdr_table, is_load) orelse return null);
+    if (max == phdr_table.len - 1) return max;
+    for (max + 1..phdr_table.len) |i| {
+        if ((is_load(ei_class, phdr_table[i])) and (phdr_table[i].p_vaddr > phdr_table[max].p_vaddr)) {
             max = @intCast(i);
         }
     }
@@ -295,66 +245,6 @@ fn elf_newphdr(comptime ei_class: EI_CLASS, elf: *libelf.Elf, count: u16) ?[*]El
         inline .ELFCLASS32 => libelf.elf32_newphdr(elf, count),
         inline .ELFCLASS64 => libelf.elf64_newphdr(elf, count),
     };
-}
-
-fn get_patch_block_buffer(comptime ei_class: EI_CLASS, elf: *libelf.Elf, wanted_size: ElfOff(ei_class)) ?BlockInfo {
-    var phdr_num: usize = undefined;
-    if (libelf.elf_getphdrnum(elf, &phdr_num) == -1) {
-        unreachable;
-    }
-    const prev_phdr_table: []ElfPhdr(ei_class) = elf_getphdr(ei_class, elf).?[0..phdr_num];
-    const first_phdr = prev_phdr_table[0];
-    std.debug.print("prev_phdr_table[0] = {}\n", .{prev_phdr_table[0]});
-    const last_mem_seg_idx: u16 = get_last_mem_seg(ei_class, prev_phdr_table).?;
-    const phdr_table: []ElfPhdr(ei_class) = elf_newphdr(ei_class, elf, @intCast(phdr_num + 1)).?[0 .. phdr_num + 1];
-    std.mem.copyBackwards(ElfPhdr(ei_class), phdr_table[1..], prev_phdr_table[1..]);
-    phdr_table[0] = first_phdr;
-    std.debug.print("phdr_table[0] = {}\n", .{phdr_table[0]});
-    const new_mem_seg_idx: u16 = @intCast(phdr_num);
-
-    std.debug.print("last_mem_seg_idx = {}\n", .{last_mem_seg_idx});
-    std.debug.print("phdr = {}\n", .{phdr_table[last_mem_seg_idx]});
-
-    phdr_table[new_mem_seg_idx].p_type = libelf.PT_LOAD;
-    phdr_table[new_mem_seg_idx].p_flags = libelf.PF_X | libelf.PF_R;
-    phdr_table[new_mem_seg_idx].p_align = 0x1000;
-    phdr_table[new_mem_seg_idx].p_filesz = wanted_size;
-    phdr_table[new_mem_seg_idx].p_offset = phdr_table[phdr_num - 1].p_offset + phdr_table[phdr_num - 1].p_filesz;
-    phdr_table[new_mem_seg_idx].p_vaddr = phdr_table[last_mem_seg_idx].p_vaddr + phdr_table[last_mem_seg_idx].p_memsz;
-    phdr_table[new_mem_seg_idx].p_paddr = phdr_table[last_mem_seg_idx].p_paddr + phdr_table[last_mem_seg_idx].p_memsz;
-    phdr_table[new_mem_seg_idx].p_memsz = phdr_table[new_mem_seg_idx].p_filesz + phdr_table[new_mem_seg_idx].p_align - (phdr_table[new_mem_seg_idx].p_filesz % phdr_table[new_mem_seg_idx].p_align);
-
-    const new_data_off = phdr_table[new_mem_seg_idx].p_offset;
-    const new_data_addr = phdr_table[last_mem_seg_idx].p_vaddr;
-
-    std.debug.print("new_data_off = {x}\nnew_data_addr = {x}\n", .{ new_data_off, new_data_addr });
-
-    // again I am assuming that segments are sequential.
-    // adjust_segs(ei_class, phdr_table[last_mem_seg_idx + 1 ..], wanted_size);
-    // adjust_secs_after(ei_class, elf, new_data_off, wanted_size);
-
-    const scn = libelf.elf_newscn(elf).?;
-
-    var d: *libelf.Elf_Data = libelf.elf_newdata(scn).?;
-    d.d_align = 8;
-    d.d_off = 0;
-    d.d_buf = null;
-    d.d_type = libelf.ELF_T_BYTE;
-    d.d_size = wanted_size;
-    d.d_version = libelf.EV_CURRENT;
-
-    var shdr: *ElfShdr(ei_class) = elf_getshdr(ei_class, scn).?;
-    shdr.sh_name = 0;
-    shdr.sh_type = libelf.SHT_PROGBITS;
-    shdr.sh_addr = new_data_addr;
-    shdr.sh_offset = new_data_off;
-    shdr.sh_flags = libelf.SHF_ALLOC;
-    shdr.sh_size = 0;
-
-    std.debug.print("new section loc = {x}\n", .{new_data_off});
-    std.debug.print("new section size = {}\n", .{wanted_size});
-
-    return BlockInfo{ .block = d, .addr = new_data_addr };
 }
 
 fn off_to_addr(comptime ei_class: EI_CLASS, elf: *libelf.Elf, off: ElfOff(ei_class)) ?ElfAddr(ei_class) {
@@ -417,35 +307,153 @@ fn insert_jmp(ksh: *keystone.ks_engine, to_patch: []u8, target_addr: i65) !usize
     return siz;
 }
 
-fn insert_patch(
-    comptime ei_class: EI_CLASS,
-    elf: *libelf.Elf,
-    csh: capstone.csh,
-    ksh: *keystone.ks_engine,
-    off: ElfOff(ei_class),
-    patch_data: []const u8,
-    patch_block: []u8,
-) !void {
-    const max_jmp_insn_size: comptime_int = 1 + @sizeOf(ElfOff(ei_class)); // this is total guess work.
-    const extra_insn_max_size: comptime_int = max_jmp_insn_size + 10; // this is total guess work.
-    if (patch_data.len + max_jmp_insn_size + extra_insn_max_size > patch_block.len) {
+fn find_code_cave(comptime ei_class: EI_CLASS, phdr_table: []ElfPhdr(ei_class), wanted_size: u64) ?SegEdge {
+    var prev: u16 = find(0, phdr_table.len, 1, ei_class, phdr_table, is_load);
+    var curr: u16 = undefined;
+    if (is_code_seg(ei_class, phdr_table[prev])) {
+        if (wanted_size < phdr_table[prev].p_vaddr) {
+            return SegEdge{ .seg_idx = prev, .is_end = false };
+        }
+        curr = find(prev + 1, phdr_table.len, 1, ei_class, phdr_table, is_load);
+        if ((phdr_table[prev].p_memsz <= phdr_table[prev].p_filesz) and (wanted_size < (phdr_table[curr].p_vaddr - (phdr_table[prev].p_vaddr + phdr_table[prev].p_memsz)))) {
+            return SegEdge{ .seg_idx = prev, .is_end = true };
+        }
+    }
+    while (find(curr + 1, phdr_table.len, 1, ei_class, phdr_table, is_load)) |next| {
+        if (is_code_seg(ei_class, phdr_table[curr])) {
+            if (wanted_size < (phdr_table[curr].p_vaddr - (phdr_table[prev].p_vaddr + phdr_table[prev].p_memsz))) {
+                return SegEdge{ .seg_idx = curr, .is_end = false };
+            }
+            if ((phdr_table[curr].p_memsz <= phdr_table[curr].p_filesz) and (wanted_size < (phdr_table[next].p_vaddr - (phdr_table[curr].p_vaddr + phdr_table[curr].p_memsz)))) {
+                return SegEdge{ .seg_idx = curr, .is_end = true };
+            }
+        }
+        prev = curr;
+        curr = next;
+    }
+    if (is_code_seg(phdr_table[curr])) {
+        if (wanted_size < (phdr_table[curr].p_vaddr - (phdr_table[prev].p_vaddr + phdr_table[prev].p_memsz))) {
+            return SegEdge{ .seg_idx = curr, .is_end = false };
+        }
+        if (wanted_size < (std.math.maxInt(u64) - phdr_table[curr].p_vaddr)) {
+            return SegEdge{ .seg_idx = curr, .is_end = true };
+        }
+    }
+    return null;
+}
+
+fn new_seg_code_buf(ei_class: EI_CLASS, elf: *libelf.Elf, old_phdr_table: []ElfPhdr(ei_class), size: u64) []ElfPhdr(ei_class) {
+    std.debug.print("prev_phdr_table[0] = {}\n", .{old_phdr_table[0]});
+    const last_mem_seg_idx: u16 = get_last_mem_seg(ei_class, old_phdr_table).?;
+    const last_file_seg_idx: u16 = get_last_file_seg(ei_class, old_phdr_table).?;
+    const first_phdr = old_phdr_table[0];
+    const new_phdr_table: []ElfPhdr(ei_class) = elf_newphdr(ei_class, elf, @intCast(old_phdr_table.len + 1)).?[0 .. old_phdr_table.len + 1];
+    // this feels like bullshit (I should either have to save the whole table or not save at all), saving only the first is wierd.
+    std.mem.copyBackwards(ElfPhdr(ei_class), new_phdr_table[1..], old_phdr_table[1..]);
+    new_phdr_table[0] = first_phdr;
+    std.debug.print("phdr_table[0] = {}\n", .{old_phdr_table[0]});
+    const new_mem_seg_idx: u16 = @intCast(old_phdr_table.len);
+
+    std.debug.print("last_mem_seg_idx = {}\nlast_file_seg_idx = {}\n", .{ last_mem_seg_idx, last_file_seg_idx });
+    std.debug.print("last_mem_phdr = {}\nlast_file_phdr = {}\n", .{ new_phdr_table[last_mem_seg_idx], new_phdr_table[last_file_seg_idx] });
+    const vmem_end = new_phdr_table[last_mem_seg_idx].p_vaddr + new_phdr_table[last_mem_seg_idx].p_memsz;
+    const pmem_end = new_phdr_table[last_mem_seg_idx].p_paddr + new_phdr_table[last_mem_seg_idx].p_memsz;
+
+    new_phdr_table[new_mem_seg_idx].p_type = libelf.PT_LOAD;
+    new_phdr_table[new_mem_seg_idx].p_flags = libelf.PF_X | libelf.PF_R;
+    new_phdr_table[new_mem_seg_idx].p_align = 0x1000;
+    new_phdr_table[new_mem_seg_idx].p_offset = new_phdr_table[last_file_seg_idx].p_offset + new_phdr_table[last_file_seg_idx].p_filesz;
+    new_phdr_table[new_mem_seg_idx].p_vaddr = vmem_end + (new_phdr_table[last_mem_seg_idx].p_align - vmem_end % new_phdr_table[last_mem_seg_idx].p_align);
+    new_phdr_table[new_mem_seg_idx].p_paddr = pmem_end + (new_phdr_table[last_mem_seg_idx].p_align - pmem_end % new_phdr_table[last_mem_seg_idx].p_align);
+    new_phdr_table[new_mem_seg_idx].p_filesz = size;
+    new_phdr_table[new_mem_seg_idx].p_memsz = size;
+
+    return new_phdr_table;
+}
+
+fn create_elf_data(ei_class: EI_CLASS, elf: *libelf.Elf, addr: u64, off: u64, size: u64) *libelf.Elf_Data {
+    const scn = libelf.elf_newscn(elf).?;
+
+    var shdr: *ElfShdr(ei_class) = elf_getshdr(ei_class, scn).?;
+    shdr.sh_name = 0;
+    shdr.sh_type = libelf.SHT_PROGBITS;
+    shdr.sh_addr = addr;
+    shdr.sh_offset = off;
+    shdr.sh_flags = libelf.SHF_ALLOC;
+    shdr.sh_size = 0;
+
+    var d: *libelf.Elf_Data = libelf.elf_newdata(scn).?;
+    d.d_align = 8;
+    d.d_off = 0;
+    d.d_buf = null;
+    d.d_type = libelf.ELF_T_BYTE;
+    d.d_size = size;
+    d.d_version = libelf.EV_CURRENT;
+
+    return d;
+}
+
+fn get_patch_buf(comptime ei_class: EI_CLASS, elf: *libelf.Elf, wanted_size: u64) ?BlockInfo {
+    var phdr_num: usize = undefined;
+    if (libelf.elf_getphdrnum(elf, &phdr_num) == -1) {
         unreachable;
     }
-    const addr: ElfAddr(ei_class) = off_to_addr(ei_class, elf, off).?;
-    const patch_off_data: []u8 = get_off_data(ei_class, elf, off).?;
-    const move_insn_size: ElfOff(ei_class) = @intCast(calc_min_move(csh, patch_off_data, max_jmp_insn_size));
-    var elf_patch_block_data = get_patch_block_buffer(ei_class, elf, @as(u32, @intCast(patch_data.len)) + move_insn_size + max_jmp_insn_size).?;
-    elf_patch_block_data.block.d_buf = @ptrCast(patch_block);
-    @memcpy(patch_block[0..patch_data.len], patch_data);
-    @memcpy(patch_block[patch_data.len .. patch_data.len + move_insn_size], patch_off_data[0..move_insn_size]);
+    const phdr_table: []ElfPhdr(ei_class) = elf_getphdr(ei_class, elf).?[0..phdr_num];
+    const code_cave_maybe: ?SegEdge = find_code_cave(ei_class, phdr_table, wanted_size);
+    var patch_buf_off: u64 = undefined;
+    var patch_buf_addr: u64 = undefined;
+    if (code_cave_maybe) |code_cave| {
+        patch_buf_off = phdr_table[code_cave.seg_idx].p_offset + @intFromBool(code_cave.is_end) * phdr_table[code_cave.seg_idx].p_filesz;
+        patch_buf_addr = phdr_table[code_cave.seg_idx].p_vaddr + @intFromBool(code_cave.is_end) * phdr_table[code_cave.seg_idx].p_memsz;
+        phdr_table[code_cave.seg_idx].p_filesz += wanted_size;
+        phdr_table[code_cave.seg_idx].p_memsz += wanted_size;
+        if (!code_cave.is_end) {
+            phdr_table[code_cave.seg_idx].p_vaddr -= wanted_size;
+            phdr_table[code_cave.seg_idx].p_paddr -= wanted_size;
+        }
+        adjust_segs_after(ei_class, phdr_table, patch_buf_off, wanted_size);
+        adjust_secs_after(ei_class, elf, patch_buf_off, wanted_size);
+    } else {
+        const new_phdr_table = new_seg_code_buf(ei_class, phdr_table);
+        patch_buf_off = new_phdr_table[new_phdr_table.len - 1].p_offset;
+        patch_buf_addr = new_phdr_table[new_phdr_table.len - 1].p_vaddr;
+    }
 
-    const rel_change = elf_patch_block_data.addr - addr;
-    _ = try insert_jmp(ksh, patch_off_data, rel_change);
-    const jmp_back_insn_addr = elf_patch_block_data.addr + patch_data.len + move_insn_size;
-    const jmp_back_target_addr = addr + move_insn_size;
+    std.debug.print("patch_buf_off = {x}\npatch_buf_addr = {x}\n", .{ patch_buf_off, patch_buf_addr });
 
-    std.debug.print("jmp_back_addr = {x}\naddr = {x}\nmoved_insn_size = {x}\n", .{ jmp_back_insn_addr, addr, move_insn_size });
-    _ = try insert_jmp(ksh, patch_block[patch_data.len + move_insn_size ..], @as(i65, @intCast(jmp_back_target_addr)) - jmp_back_insn_addr);
+    const d = create_elf_data(ei_class, elf, patch_buf_addr, patch_buf_off, wanted_size);
+
+    std.debug.print("new section loc = {x}\n", .{patch_buf_off});
+    std.debug.print("new section size = {}\n", .{wanted_size});
+
+    return BlockInfo{ .data = d, .addr = patch_buf_addr };
+}
+
+const MAX_JMP_SIZE = 5; // this is based on x86_64, might need to do some actual work to make this cross architecture.
+
+fn min_buf_size(csh: capstone.csh, insn: []const u8, patch_len: u64) u64 {
+    const moved_insn_len = calc_min_move(csh, insn, MAX_JMP_SIZE);
+    return patch_len + moved_insn_len + MAX_JMP_SIZE;
+}
+
+fn insert_patch(
+    csh: capstone.csh,
+    ksh: *keystone.ks_engine,
+    to_patch: BlockInfo,
+    patch_buf: BlockInfo,
+    patch_data: []const u8,
+) !void {
+    const move_insn_size: u64 = @intCast(calc_min_move(csh, to_patch.block.d_buf, MAX_JMP_SIZE));
+    @memcpy(patch_buf.block.d_buf[0..patch_data.len], patch_data);
+    @memcpy(patch_buf.block.d_buf[patch_data.len .. patch_data.len + move_insn_size], to_patch.block.d_buf[0..move_insn_size]);
+
+    const rel_change = patch_buf.addr - to_patch.addr;
+    _ = try insert_jmp(ksh, to_patch.block.d_buf, rel_change);
+    const jmp_back_insn_addr = patch_buf.addr + patch_data.len + move_insn_size;
+    const jmp_back_target_addr = to_patch.addr + move_insn_size;
+
+    std.debug.print("jmp_back_addr = {x}\naddr = {x}\nmoved_insn_size = {x}\n", .{ jmp_back_insn_addr, to_patch.addr, move_insn_size });
+    _ = try insert_jmp(ksh, patch_buf.block.d_buf[patch_data.len + move_insn_size ..], @as(i65, @intCast(jmp_back_target_addr)) - jmp_back_insn_addr);
 }
 
 pub fn main() !u8 {
@@ -455,7 +463,7 @@ pub fn main() !u8 {
     }
     defer _ = capstone.cs_close(&csh);
     var temp_ksh: ?*keystone.ks_engine = null;
-    if ((keystone.ks_open(keystone.KS_ARCH_X86, keystone.KS_MODE_32, &temp_ksh) != keystone.KS_ERR_OK) or (temp_ksh == null)) {
+    if ((keystone.ks_open(keystone.KS_ARCH_X86, keystone.KS_MODE_64, &temp_ksh) != keystone.KS_ERR_OK) or (temp_ksh == null)) {
         unreachable;
     }
     const ksh: *keystone.ks_engine = temp_ksh.?;
