@@ -6,15 +6,6 @@ const libelf = @cImport(@cInclude("libelf.h"));
 const capstone = @cImport(@cInclude("capstone/capstone.h"));
 const keystone = @cImport(@cInclude("keystone.h"));
 
-fn kind_string(kind: c_uint) []const u8 {
-    return switch (kind) {
-        libelf.ELF_K_AR => return "ELF_K_AR",
-        libelf.ELF_K_ELF => return "ELF_K_ELF",
-        libelf.ELF_K_NONE => return "ELF_K_NONE",
-        else => unreachable,
-    };
-}
-
 const EI_CLASS: type = enum(u2) {
     ELFCLASS32 = libelf.ELFCLASS32,
     ELFCLASS64 = libelf.ELFCLASS64,
@@ -104,25 +95,6 @@ fn get_off_scn(comptime ei_class: EI_CLASS, elf: *libelf.Elf, off: ElfOff(ei_cla
         }
     }
     return null;
-}
-
-fn make_off_scn(comptime ei_class: EI_CLASS, elf: *libelf.Elf, off: ElfOff(ei_class)) *libelf.Elf_Scn {
-    const scn: *libelf.Elf_Scn = libelf.elf_newscn(elf) orelse {
-        std.debug.print("{s}\n", .{libelf.elf_errmsg(libelf.elf_errno())});
-        unreachable;
-    };
-    const shdr: *ElfShdr(ei_class) = elf_getshdr(ei_class, scn) orelse {
-        std.debug.print("{s}\n", .{libelf.elf_errmsg(libelf.elf_errno())});
-        unreachable;
-    };
-
-    shdr.sh_name = 0;
-    shdr.sh_type = libelf.SHT_PROGBITS;
-    shdr.sh_flags = libelf.SHF_EXECINSTR | libelf.SHF_ALLOC;
-    shdr.sh_offset = off;
-    shdr.sh_size = 0x100;
-
-    return scn;
 }
 
 fn get_scn_off_data(comptime ei_class: EI_CLASS, scn: *libelf.Elf_Scn, shdr: *ElfShdr(ei_class), off: ElfOff(ei_class)) ?*libelf.Elf_Data {
@@ -304,7 +276,7 @@ fn calc_min_move(csh: capstone.csh, insns: []const u8, wanted_size: u64) u64 {
     return end - start;
 }
 
-fn insert_jmp(ksh: *keystone.ks_engine, to_patch: []u8, target_addr: i65) !usize {
+fn insert_jmp(ksh: *keystone.ks_engine, patch_loc: []u8, target_addr: i65) !usize {
     const max_jmp_asm_size: comptime_int = comptime blk: {
         break :blk "jmp ".len + std.fmt.count("{}", .{std.math.minInt(i128)}) + 1;
     };
@@ -312,14 +284,14 @@ fn insert_jmp(ksh: *keystone.ks_engine, to_patch: []u8, target_addr: i65) !usize
     var siz: usize = undefined;
     var enc_count: usize = undefined;
     var jmp_insn_asm_buf: [max_jmp_asm_size]u8 = undefined;
-    const jmp_to_patch = try std.fmt.bufPrintZ(&jmp_insn_asm_buf, "jmp {};", .{target_addr});
-    if (keystone.ks_asm(ksh, @as(?[*]const u8, @ptrCast(jmp_to_patch)), 0, &encode, &siz, &enc_count) != keystone.KS_ERR_OK) {
+    const jmp_asm = try std.fmt.bufPrintZ(&jmp_insn_asm_buf, "jmp {};", .{target_addr});
+    if (keystone.ks_asm(ksh, @as(?[*]const u8, @ptrCast(jmp_asm)), 0, &encode, &siz, &enc_count) != keystone.KS_ERR_OK) {
         // std.debug.print("ERROR: ks_asm() failed & count = {}, error = {}\n", .{ enc_count, keystone.ks_errno(ksh) });
         unreachable;
     }
     defer keystone.ks_free(encode);
-    std.debug.print("jmp_to_patch ({s}) = {x}\n", .{ jmp_to_patch, encode.?[0..siz] });
-    @memcpy(to_patch[0..siz], encode.?[0..siz]);
+    std.debug.print("jmp ({s}) = {x}\n", .{ jmp_asm, encode.?[0..siz] });
+    @memcpy(patch_loc[0..siz], encode.?[0..siz]);
     return siz;
 }
 
@@ -394,7 +366,7 @@ fn create_elf_data(comptime ei_class: EI_CLASS, elf: *libelf.Elf, addr: ElfAddr(
     shdr.sh_type = libelf.SHT_PROGBITS;
     shdr.sh_addr = addr;
     shdr.sh_offset = off;
-    shdr.sh_flags = libelf.SHF_ALLOC;
+    shdr.sh_flags = libelf.SHF_ALLOC | libelf.SHF_EXECINSTR;
     shdr.sh_size = size;
 
     var d: *libelf.Elf_Data = libelf.elf_newdata(scn).?;
@@ -431,8 +403,10 @@ fn get_patch_buf(comptime ei_class: EI_CLASS, elf: *libelf.Elf, wanted_size: Elf
         phdr_table[code_cave.seg_idx].p_memsz += wanted_size;
         // adjusting the file offsets of the segments and secttions, other things might also need adjustment but I truly dont know.
         // this is dont because we need to adjust the section that starts right at the start of the segment.
-        adjust_segs_after(ei_class, phdr_table, patch_buf_off, wanted_size);
+
+        std.debug.print("flagging = {}\n", .{libelf.elf_flagelf(elf, libelf.ELF_C_SET, libelf.ELF_F_LAYOUT)});
         adjust_secs_after(ei_class, elf, patch_buf_off - 1, wanted_size);
+        adjust_segs_after(ei_class, phdr_table, patch_buf_off, wanted_size);
     } else {
         const new_phdr_table = new_seg_code_buf(ei_class, elf, phdr_table, wanted_size);
         patch_buf_off = new_phdr_table[new_phdr_table.len - 1].p_offset;
@@ -468,10 +442,13 @@ fn insert_patch(
     @memcpy(patch_buf.block.*[patch_data.len .. patch_data.len + move_insn_size], to_patch.block.*[0..move_insn_size]);
 
     const rel_change: i65 = @as(i65, @intCast(patch_buf.addr)) - @as(i65, @intCast(to_patch.addr));
+    std.debug.print("inserting escape jmp\n", .{});
+    std.debug.print("escape_jmp_addr = {x}\ntarget_addr = {x}\nmoved_insn_size = {x}\n", .{ to_patch.addr, patch_buf.addr, move_insn_size });
     _ = try insert_jmp(ksh, to_patch.block.*, rel_change);
     const jmp_back_insn_addr = patch_buf.addr + patch_data.len + move_insn_size;
     const jmp_back_target_addr = to_patch.addr + move_insn_size;
 
+    std.debug.print("inserting jmp back\n", .{});
     std.debug.print("jmp_back_addr = {x}\naddr = {x}\nmoved_insn_size = {x}\n", .{ jmp_back_insn_addr, to_patch.addr, move_insn_size });
     _ = try insert_jmp(ksh, patch_buf.block.*[patch_data.len + move_insn_size ..], @as(i65, @intCast(jmp_back_target_addr)) - jmp_back_insn_addr);
 }
@@ -512,7 +489,7 @@ pub fn main() !u8 {
     if (kind != libelf.ELF_K_ELF) {
         return 1;
     }
-    const test_patch = "yoyohamelech";
+    const test_patch = &[_]u8{ 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90 };
     var dst: usize = undefined;
     const c_ident: [*]const u8 = libelf.elf_getident(elf, &dst) orelse {
         std.debug.print("{s}\n", .{libelf.elf_errmsg(libelf.elf_errno())});
@@ -524,28 +501,35 @@ pub fn main() !u8 {
     const off = 0x111f;
     switch (ei_class) {
         .ELFCLASS32 => {
-            var data_to_patch = get_off_data(EI_CLASS.ELFCLASS32, elf, off).?;
-            const patch_buff_size: libelf.Elf32_Word = @intCast(min_buf_size(csh, data_to_patch, test_patch.len));
+            var temp_data = get_off_data(EI_CLASS.ELFCLASS32, elf, off).?;
+            const data_to_patch = BlockInfo{ .block = &temp_data, .addr = off_to_addr(EI_CLASS.ELFCLASS32, elf, off).? };
+            const patch_buff_size: libelf.Elf32_Word = @intCast(min_buf_size(csh, temp_data, test_patch.len));
             const data_patch_buff = get_patch_buf(EI_CLASS.ELFCLASS32, elf, patch_buff_size).?;
             data_patch_buff.block.* = patch_buff[0..patch_buff_size];
-            try insert_patch(csh, ksh, BlockInfo{ .block = &data_to_patch, .addr = off_to_addr(EI_CLASS.ELFCLASS32, elf, off).? }, data_patch_buff, test_patch);
+            try insert_patch(csh, ksh, data_to_patch, data_patch_buff, test_patch);
 
-            std.debug.print("flagging = {}\n", .{libelf.elf_flagelf(elf, libelf.ELF_C_SET, libelf.ELF_F_LAYOUT | libelf.ELF_F_DIRTY)});
-            const temp = libelf.elf_update(elf, libelf.ELF_C_WRITE);
-            std.debug.print("image size = {}\n", .{temp});
-        },
-        .ELFCLASS64 => {
-            var data_to_patch = get_off_data(EI_CLASS.ELFCLASS64, elf, off).?;
-            const patch_buff_size: libelf.Elf64_Word = @intCast(min_buf_size(csh, data_to_patch, test_patch.len));
-            const data_patch_buff = get_patch_buf(EI_CLASS.ELFCLASS64, elf, patch_buff_size).?;
-            data_patch_buff.block.* = patch_buff[0..patch_buff_size];
-            try insert_patch(csh, ksh, BlockInfo{ .block = &data_to_patch, .addr = off_to_addr(EI_CLASS.ELFCLASS64, elf, off).? }, data_patch_buff, test_patch);
-            std.debug.print("flagging = {}\n", .{libelf.elf_flagelf(elf, libelf.ELF_C_SET, libelf.ELF_F_LAYOUT | libelf.ELF_F_DIRTY)});
             const temp = libelf.elf_update(elf, libelf.ELF_C_WRITE);
             if (temp == -1) {
                 const err = libelf.elf_errno();
                 std.debug.print("errno = {}\nerr = {s}\n", .{ err, libelf.elf_errmsg(err) });
             }
+
+            std.debug.print("image size = {}\n", .{temp});
+        },
+        .ELFCLASS64 => {
+            var temp_data = get_off_data(EI_CLASS.ELFCLASS64, elf, off).?;
+            const data_to_patch = BlockInfo{ .block = &temp_data, .addr = off_to_addr(EI_CLASS.ELFCLASS64, elf, off).? };
+            const patch_buff_size: libelf.Elf32_Word = @intCast(min_buf_size(csh, temp_data, test_patch.len));
+            const data_patch_buff = get_patch_buf(EI_CLASS.ELFCLASS64, elf, patch_buff_size).?;
+            data_patch_buff.block.* = patch_buff[0..patch_buff_size];
+            try insert_patch(csh, ksh, data_to_patch, data_patch_buff, test_patch);
+
+            const temp = libelf.elf_update(elf, libelf.ELF_C_WRITE);
+            if (temp == -1) {
+                const err = libelf.elf_errno();
+                std.debug.print("errno = {}\nerr = {s}\n", .{ err, libelf.elf_errmsg(err) });
+            }
+
             std.debug.print("image size = {}\n", .{temp});
         },
     }
