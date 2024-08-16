@@ -383,7 +383,7 @@ fn create_elf_data(comptime ei_class: EI_CLASS, elf: *libelf.Elf, addr: ElfAddr(
     const scn = libelf.elf_newscn(elf).?;
 
     var shdr: *ElfShdr(ei_class) = elf_getshdr(ei_class, scn).?;
-    shdr.sh_name = 0;
+    shdr.sh_name = 1;
     shdr.sh_type = libelf.SHT_PROGBITS;
     shdr.sh_addr = addr;
     shdr.sh_offset = off;
