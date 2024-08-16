@@ -39,6 +39,13 @@ fn ElfPhdr(comptime ei_class: EI_CLASS) type {
     };
 }
 
+fn ElfEhdr(comptime ei_class: EI_CLASS) type {
+    return switch (ei_class) {
+        inline .ELFCLASS32 => libelf.Elf32_Ehdr,
+        inline .ELFCLASS64 => libelf.Elf64_Ehdr,
+    };
+}
+
 fn ElfShdr(comptime ei_class: EI_CLASS) type {
     return switch (ei_class) {
         inline .ELFCLASS32 => libelf.Elf32_Shdr,
@@ -54,6 +61,13 @@ const Error: type = error{
     NoSections,
     NotPatchingNotBytes,
 };
+
+fn elf_getehdr(comptime ei_class: EI_CLASS, elf: *libelf.Elf) ?*ElfEhdr(ei_class) {
+    return switch (ei_class) {
+        inline .ELFCLASS32 => libelf.elf32_getehdr(elf),
+        inline .ELFCLASS64 => libelf.elf64_getehdr(elf),
+    };
+}
 
 fn elf_getphdr(comptime ei_class: EI_CLASS, elf: *libelf.Elf) ?[*]ElfPhdr(ei_class) {
     return switch (ei_class) {
@@ -205,8 +219,15 @@ fn adjust_secs_after(comptime ei_class: EI_CLASS, elf: *libelf.Elf, after: ElfOf
         if (shdr.sh_offset > after) {
             shdr.sh_offset += amount;
             // std.debug.print("flagging = {}\n ", .{libelf.elf_flagscn(scn, libelf.ELF_C_SET, libelf.ELF_F_DIRTY)});
-            // std.debug.print("flagging = {}\n ", .{libelf.elf_flagshdr(scn, libelf.ELF_C_SET, libelf.ELF_F_DIRTY)});
+            std.debug.print("flagging = {}\n ", .{libelf.elf_flagshdr(scn, libelf.ELF_C_SET, libelf.ELF_F_DIRTY)});
         }
+    }
+}
+
+fn adjust_ehdr(comptime ei_class: EI_CLASS, elf: *libelf.Elf, after: ElfOff(ei_class), amount: ElfWord(ei_class)) void {
+    var ehdr: *ElfEhdr(ei_class) = elf_getehdr(ei_class, elf).?;
+    if (ehdr.e_shoff > after) {
+        ehdr.e_shoff += amount;
     }
 }
 
@@ -402,11 +423,12 @@ fn get_patch_buf(comptime ei_class: EI_CLASS, elf: *libelf.Elf, wanted_size: Elf
         phdr_table[code_cave.seg_idx].p_filesz += wanted_size;
         phdr_table[code_cave.seg_idx].p_memsz += wanted_size;
         // adjusting the file offsets of the segments and secttions, other things might also need adjustment but I truly dont know.
-        // this is dont because we need to adjust the section that starts right at the start of the segment.
-
         std.debug.print("flagging = {}\n", .{libelf.elf_flagelf(elf, libelf.ELF_C_SET, libelf.ELF_F_LAYOUT)});
-        adjust_secs_after(ei_class, elf, patch_buf_off - 1, wanted_size);
         adjust_segs_after(ei_class, phdr_table, patch_buf_off, wanted_size);
+        std.debug.print("flagging = {}\n ", .{libelf.elf_flagphdr(elf, libelf.ELF_C_SET, libelf.ELF_F_DIRTY)});
+        // the minus one is because we need to adjust the section that starts right at the start of the segment (unlike with the segment where we just adjusted it).
+        adjust_secs_after(ei_class, elf, patch_buf_off - 1, wanted_size);
+        adjust_ehdr(ei_class, elf, patch_buf_off, wanted_size);
     } else {
         const new_phdr_table = new_seg_code_buf(ei_class, elf, phdr_table, wanted_size);
         patch_buf_off = new_phdr_table[new_phdr_table.len - 1].p_offset;
