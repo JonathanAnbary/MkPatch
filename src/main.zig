@@ -203,29 +203,40 @@ const BlockInfo: type = struct {
     addr: u64,
 };
 
+// do I maybe need tto make sure the adjustments I make stay aligned?
 fn adjust_segs_after(comptime ei_class: EI_CLASS, phdr_table: []ElfPhdr(ei_class), after: ElfOff(ei_class), amount: ElfWord(ei_class)) void {
+    var cume_adjust: ElfWord(ei_class) = 0;
+    var min_adjust: ElfWord(ei_class) = amount;
     for (phdr_table) |*phdr| {
         if (phdr.p_offset > after) {
-            phdr.p_offset += amount;
+            min_adjust += @as(ElfWord(ei_class), @intCast(phdr.p_align - (min_adjust % phdr.p_align)));
+            phdr.p_offset += min_adjust;
+            cume_adjust += min_adjust;
+            // phdr.p_offset += amount;
         }
     }
 }
 
 // dont know what would happend if there were a section crossing segment boundries.
-fn adjust_scns_after(comptime ei_class: EI_CLASS, elf: *libelf.Elf, after: ElfOff(ei_class), amount: ElfWord(ei_class)) void {
+fn adjust_scns_after(comptime ei_class: EI_CLASS, elf: *libelf.Elf, after: ElfOff(ei_class), amount: ElfWord(ei_class)) ElfWord(ei_class) {
     var shdrnum: usize = undefined;
     if (libelf.elf_getshdrnum(elf, &shdrnum) == -1) {
         unreachable;
     }
+    var cume_adjust: ElfWord(ei_class) = 0;
+    var min_adjust: ElfWord(ei_class) = amount;
     for (0..shdrnum) |i| {
         const scn: *libelf.Elf_Scn = libelf.elf_getscn(elf, i).?;
         var shdr: *ElfShdr(ei_class) = elf_getshdr(ei_class, scn).?;
         if (shdr.sh_offset > after) {
-            shdr.sh_offset += amount;
+            min_adjust += @as(ElfWord(ei_class), @intCast(shdr.sh_addralign - (min_adjust % shdr.sh_addralign)));
+            shdr.sh_offset += min_adjust;
+            cume_adjust += min_adjust;
             // std.debug.print("flagging = {}\n ", .{libelf.elf_flagscn(scn, libelf.ELF_C_SET, libelf.ELF_F_DIRTY)});
             std.debug.print("flagging = {}\n ", .{libelf.elf_flagshdr(scn, libelf.ELF_C_SET, libelf.ELF_F_DIRTY)});
         }
     }
+    return cume_adjust;
 }
 
 fn adjust_ehdr(comptime ei_class: EI_CLASS, elf: *libelf.Elf, after: ElfOff(ei_class), amount: ElfWord(ei_class)) void {
@@ -324,18 +335,18 @@ fn find_code_cave(comptime ei_class: EI_CLASS, phdr_table: []ElfPhdr(ei_class), 
     var prev: u16 = find(0, @intCast(phdr_table.len), 1, phdr_table, gen_is_load(ei_class)).?;
     var curr: u16 = find(prev + 1, @intCast(phdr_table.len), 1, phdr_table, gen_is_load(ei_class)).?;
     if (gen_is_code_seg(ei_class)(phdr_table[prev])) {
-        if (wanted_size < phdr_table[prev].p_vaddr) {
-            return SegEdge{ .seg_idx = prev, .is_end = false };
-        }
+        // if (wanted_size < phdr_table[prev].p_vaddr) {
+        //     return SegEdge{ .seg_idx = prev, .is_end = false };
+        // }
         if ((phdr_table[prev].p_memsz <= phdr_table[prev].p_filesz) and (wanted_size < (phdr_table[curr].p_vaddr - (phdr_table[prev].p_vaddr + phdr_table[prev].p_memsz)))) {
             return SegEdge{ .seg_idx = prev, .is_end = true };
         }
     }
     while (find(curr + 1, @intCast(phdr_table.len), 1, phdr_table, gen_is_load(ei_class))) |next| {
         if (gen_is_code_seg(ei_class)(phdr_table[curr])) {
-            if (wanted_size < (phdr_table[curr].p_vaddr - (phdr_table[prev].p_vaddr + phdr_table[prev].p_memsz))) {
-                return SegEdge{ .seg_idx = curr, .is_end = false };
-            }
+            // if (wanted_size < (phdr_table[curr].p_vaddr - (phdr_table[prev].p_vaddr + phdr_table[prev].p_memsz))) {
+            //     return SegEdge{ .seg_idx = curr, .is_end = false };
+            // }
             if ((phdr_table[curr].p_memsz <= phdr_table[curr].p_filesz) and (wanted_size < (phdr_table[next].p_vaddr - (phdr_table[curr].p_vaddr + phdr_table[curr].p_memsz)))) {
                 return SegEdge{ .seg_idx = curr, .is_end = true };
             }
@@ -344,9 +355,9 @@ fn find_code_cave(comptime ei_class: EI_CLASS, phdr_table: []ElfPhdr(ei_class), 
         curr = next;
     }
     if (gen_is_code_seg(ei_class)(phdr_table[curr])) {
-        if (wanted_size < (phdr_table[curr].p_vaddr - (phdr_table[prev].p_vaddr + phdr_table[prev].p_memsz))) {
-            return SegEdge{ .seg_idx = curr, .is_end = false };
-        }
+        // if (wanted_size < (phdr_table[curr].p_vaddr - (phdr_table[prev].p_vaddr + phdr_table[prev].p_memsz))) {
+        //     return SegEdge{ .seg_idx = curr, .is_end = false };
+        // }
         if (wanted_size < (std.math.maxInt(ElfWord(ei_class)) - phdr_table[curr].p_vaddr)) {
             return SegEdge{ .seg_idx = curr, .is_end = true };
         }
@@ -507,8 +518,8 @@ fn get_patch_buf(comptime ei_class: EI_CLASS, elf: *libelf.Elf, wanted_size: Elf
         adjust_segs_after(ei_class, phdr_table, patch_buf_off, wanted_size);
         std.debug.print("flagging = {}\n ", .{libelf.elf_flagphdr(elf, libelf.ELF_C_SET, libelf.ELF_F_DIRTY)});
         // the minus one is because we need to adjust the section that starts right at the start of the segment (unlike with the segment where we just adjusted it).
-        adjust_scns_after(ei_class, elf, patch_buf_off, wanted_size);
-        adjust_ehdr(ei_class, elf, patch_buf_off, wanted_size);
+        const cume_adjust = adjust_scns_after(ei_class, elf, patch_buf_off, wanted_size);
+        adjust_ehdr(ei_class, elf, patch_buf_off, cume_adjust);
     } else {
         const new_phdr_table = new_seg_code_buf(ei_class, elf, phdr_table, wanted_size);
         patch_buf_off = new_phdr_table[new_phdr_table.len - 1].p_offset;
