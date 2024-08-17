@@ -545,10 +545,11 @@ fn clear_data_backword(comptime ei_class: EI_CLASS, scn: *libelf.Elf_Scn, extend
     // return null;
 }
 
-fn extend_scn_backword(comptime ei_class: EI_CLASS, scn: *libelf.Elf_Scn, extend_size: ElfWord(ei_class)) *[]u8 {
+fn extend_scn_backword(comptime ei_class: EI_CLASS, scn: *libelf.Elf_Scn, extend_size: ElfWord(ei_class), align_size: ElfWord(ei_class)) *[]u8 {
     const shdr: *ElfShdr(ei_class) = elf_getshdr(ei_class, scn).?;
     shdr.sh_size += extend_size;
     shdr.sh_addr -= extend_size;
+    shdr.sh_offset += align_size;
     clear_data_backword(ei_class, scn, extend_size);
     const d: *libelf.Elf_Data = libelf.elf_newdata(scn).?;
     d.d_type = libelf.ELF_T_BYTE;
@@ -586,24 +587,30 @@ fn get_patch_buf(comptime ei_class: EI_CLASS, elf: *libelf.Elf, wanted_size: Elf
     var patch_buf: *[]u8 = undefined;
     var scn: *libelf.Elf_Scn = undefined;
     if (code_cave_maybe) |code_cave| {
-        if (code_cave.is_end) {
-            patch_buf_off = phdr_table[code_cave.seg_idx].p_offset + phdr_table[code_cave.seg_idx].p_filesz;
-            patch_buf_addr = phdr_table[code_cave.seg_idx].p_vaddr + phdr_table[code_cave.seg_idx].p_memsz;
-            scn = find_scn_by_end(ei_class, elf, patch_buf_off).?;
-            patch_buf = extend_scn_forword(ei_class, scn, wanted_size);
-        } else {
-            phdr_table[code_cave.seg_idx].p_vaddr -= wanted_size;
-            phdr_table[code_cave.seg_idx].p_paddr -= wanted_size;
-            patch_buf_off = phdr_table[code_cave.seg_idx].p_offset;
-            patch_buf_addr = phdr_table[code_cave.seg_idx].p_vaddr;
-            scn = find_scn_by_start(ei_class, elf, patch_buf_off).?;
-            patch_buf = extend_scn_backword(ei_class, scn, wanted_size);
-        }
+        const adjust_size = blk: {
+            if (code_cave.is_end) {
+                patch_buf_off = phdr_table[code_cave.seg_idx].p_offset + phdr_table[code_cave.seg_idx].p_filesz;
+                patch_buf_addr = phdr_table[code_cave.seg_idx].p_vaddr + phdr_table[code_cave.seg_idx].p_memsz;
+                scn = find_scn_by_end(ei_class, elf, patch_buf_off).?;
+                patch_buf = extend_scn_forword(ei_class, scn, wanted_size);
+                break :blk wanted_size;
+            } else {
+                phdr_table[code_cave.seg_idx].p_vaddr -= wanted_size;
+                phdr_table[code_cave.seg_idx].p_paddr -= wanted_size;
+                const align_size: ElfWord(ei_class) = @intCast(phdr_table[code_cave.seg_idx].p_align - (wanted_size % phdr_table[code_cave.seg_idx].p_align));
+                phdr_table[code_cave.seg_idx].p_offset += align_size;
+                patch_buf_off = phdr_table[code_cave.seg_idx].p_offset;
+                patch_buf_addr = phdr_table[code_cave.seg_idx].p_vaddr;
+                scn = find_scn_by_start(ei_class, elf, patch_buf_off).?;
+                patch_buf = extend_scn_backword(ei_class, scn, wanted_size, align_size);
+                break :blk wanted_size + align_size;
+            }
+        };
         phdr_table[code_cave.seg_idx].p_filesz += wanted_size;
         phdr_table[code_cave.seg_idx].p_memsz += wanted_size;
         // adjusting the file offsets of the segments and secttions, other things might also need adjustment but I truly dont know.
         std.debug.print("flagging = {}\n", .{libelf.elf_flagelf(elf, libelf.ELF_C_SET, libelf.ELF_F_LAYOUT)});
-        adjust_elf_file(ei_class, elf, phdr_table, patch_buf_off, wanted_size);
+        adjust_elf_file(ei_class, elf, phdr_table, patch_buf_off, adjust_size);
         // adjust_segs_after(ei_class, phdr_table, patch_buf_off, wanted_size);
         // std.debug.print("flagging = {}\n ", .{libelf.elf_flagphdr(elf, libelf.ELF_C_SET, libelf.ELF_F_DIRTY)});
         // the minus one is because we need to adjust the section that starts right at the start of the segment (unlike with the segment where we just adjusted it).
