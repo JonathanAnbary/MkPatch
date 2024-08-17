@@ -239,37 +239,45 @@ fn adjust_elf_file(comptime ei_class: EI_CLASS, elf: *libelf.Elf, phdr_table: []
         break :blk temp;
     };
     const sortable_phdr_table = max_sortable_phdr_table[0..phdr_table.len];
-    std.sort.heap(u8, sortable_phdr_table, phdr_table, gen_less_then_phdr(ei_class));
     var shdrnum: usize = undefined;
     if (libelf.elf_getshdrnum(elf, &shdrnum) == -1) {
         unreachable;
     }
     const sortable_shdr_table = max_sortable_shdr_table[0..shdrnum];
+    std.sort.heap(u8, sortable_phdr_table, phdr_table, gen_less_then_phdr(ei_class));
     std.sort.heap(u8, sortable_shdr_table, elf, gen_less_then_shdr(ei_class));
     var cume_adjust: ElfWord(ei_class) = 0;
     var min_adjust: ElfWord(ei_class) = amount;
-    var shdr_idx: u8 = 0;
+    var sorted_shdr_idx: u8 = 0;
     std.debug.print("sortable_phdr_table = {any}\n", .{sortable_phdr_table});
     std.debug.print("sortable_shdr_table = {any}\n", .{sortable_shdr_table});
     for (sortable_phdr_table) |phdr_idx| {
         if (phdr_table[phdr_idx].p_offset > after) {
-            min_adjust += @as(ElfWord(ei_class), @intCast(phdr_table[phdr_idx].p_align - (min_adjust % phdr_table[phdr_idx].p_align)));
-            while (shdr_idx < sortable_shdr_table.len) {
-                const scn = libelf.elf_getscn(elf, shdr_idx).?;
+            const diff = (min_adjust % phdr_table[phdr_idx].p_align);
+            if (diff != 0) {
+                min_adjust += @as(ElfWord(ei_class), @intCast(phdr_table[phdr_idx].p_align - diff));
+            }
+            while (sorted_shdr_idx < sortable_shdr_table.len) {
+                const scn = libelf.elf_getscn(elf, sortable_shdr_table[sorted_shdr_idx]).?;
                 const shdr = elf_getshdr(ei_class, scn).?;
                 if (shdr.sh_offset > (phdr_table[phdr_idx].p_offset + phdr_table[phdr_idx].p_filesz)) {
                     break;
                 }
                 if (shdr.sh_offset < phdr_table[phdr_idx].p_offset) {
-                    shdr_idx += 1;
+                    sorted_shdr_idx += 1;
                     continue;
                 }
                 shdr.sh_offset += min_adjust;
-                shdr_idx += 1;
+                sorted_shdr_idx += 1;
             }
             phdr_table[phdr_idx].p_offset += min_adjust;
             cume_adjust += min_adjust;
         }
+    }
+    for (sortable_shdr_table[sorted_shdr_idx..]) |shdr_idx| {
+        const scn = libelf.elf_getscn(elf, shdr_idx).?;
+        const shdr = elf_getshdr(ei_class, scn).?;
+        shdr.sh_offset += min_adjust;
     }
     var ehdr: *ElfEhdr(ei_class) = elf_getehdr(ei_class, elf).?;
     if (ehdr.e_shoff > after) {
@@ -409,18 +417,18 @@ fn find_code_cave(comptime ei_class: EI_CLASS, phdr_table: []ElfPhdr(ei_class), 
     var prev: u16 = find(0, @intCast(phdr_table.len), 1, phdr_table, gen_is_load(ei_class)).?;
     var curr: u16 = find(prev + 1, @intCast(phdr_table.len), 1, phdr_table, gen_is_load(ei_class)).?;
     if (gen_is_code_seg(ei_class)(phdr_table[prev])) {
-        if (wanted_size < phdr_table[prev].p_vaddr) {
-            return SegEdge{ .seg_idx = prev, .is_end = false };
-        }
+        // if (wanted_size < phdr_table[prev].p_vaddr) {
+        //     return SegEdge{ .seg_idx = prev, .is_end = false };
+        // }
         if ((phdr_table[prev].p_memsz <= phdr_table[prev].p_filesz) and (wanted_size < (phdr_table[curr].p_vaddr - (phdr_table[prev].p_vaddr + phdr_table[prev].p_memsz)))) {
             return SegEdge{ .seg_idx = prev, .is_end = true };
         }
     }
     while (find(curr + 1, @intCast(phdr_table.len), 1, phdr_table, gen_is_load(ei_class))) |next| {
         if (gen_is_code_seg(ei_class)(phdr_table[curr])) {
-            if (wanted_size < (phdr_table[curr].p_vaddr - (phdr_table[prev].p_vaddr + phdr_table[prev].p_memsz))) {
-                return SegEdge{ .seg_idx = curr, .is_end = false };
-            }
+            // if (wanted_size < (phdr_table[curr].p_vaddr - (phdr_table[prev].p_vaddr + phdr_table[prev].p_memsz))) {
+            //     return SegEdge{ .seg_idx = curr, .is_end = false };
+            // }
             if ((phdr_table[curr].p_memsz <= phdr_table[curr].p_filesz) and (wanted_size < (phdr_table[next].p_vaddr - (phdr_table[curr].p_vaddr + phdr_table[curr].p_memsz)))) {
                 return SegEdge{ .seg_idx = curr, .is_end = true };
             }
@@ -429,9 +437,9 @@ fn find_code_cave(comptime ei_class: EI_CLASS, phdr_table: []ElfPhdr(ei_class), 
         curr = next;
     }
     if (gen_is_code_seg(ei_class)(phdr_table[curr])) {
-        if (wanted_size < (phdr_table[curr].p_vaddr - (phdr_table[prev].p_vaddr + phdr_table[prev].p_memsz))) {
-            return SegEdge{ .seg_idx = curr, .is_end = false };
-        }
+        // if (wanted_size < (phdr_table[curr].p_vaddr - (phdr_table[prev].p_vaddr + phdr_table[prev].p_memsz))) {
+        //     return SegEdge{ .seg_idx = curr, .is_end = false };
+        // }
         if (wanted_size < (std.math.maxInt(ElfWord(ei_class)) - phdr_table[curr].p_vaddr)) {
             return SegEdge{ .seg_idx = curr, .is_end = true };
         }
@@ -639,6 +647,28 @@ fn insert_patch(
     _ = try insert_jmp(ksh, patch_buf.block.*[patch_data.len + move_insn_size ..], @as(i65, @intCast(jmp_back_target_addr)) - jmp_back_insn_addr);
 }
 
+fn print_elf(comptime ei_class: EI_CLASS, elf: *libelf.Elf) void {
+    // const ehdr: *ElfEhdr(ei_class) = elf_getehdr(ei_class, elf).?;
+    // std.debug.print("ehdr = {}\n", .{ehdr});
+    // const temp: [*]ElfPhdr(ei_class) = elf_getphdr(ei_class, elf).?;
+    // var phdr_num: usize = undefined;
+    // if (libelf.elf_getphdrnum(elf, &phdr_num) == -1) {
+    //     unreachable;
+    // }
+    // const phdr_table: []ElfPhdr(ei_class) = temp[0..phdr_num];
+    // std.debug.print("phdr table = \n{any}\n", .{phdr_table});
+    std.debug.print("shdr table:\nindex name type flags addr      offset  size   link info align entsize offset+size\n", .{});
+    var shdrnum: usize = undefined;
+    if (libelf.elf_getshdrnum(elf, &shdrnum) == -1) {
+        unreachable;
+    }
+    for (0..shdrnum) |i| {
+        const scn: *libelf.Elf_Scn = libelf.elf_getscn(elf, i).?;
+        const shdr: *ElfShdr(ei_class) = elf_getshdr(ei_class, scn).?;
+        std.debug.print("[{d:0>2}]  {: <4} {: <4} {: <5} {x: <9} {x: <7} {x: <6} {: <4} {: <4} {x: <5} {: <7} {x: <7}\n", .{ i, shdr.sh_name, shdr.sh_type, shdr.sh_flags, shdr.sh_addr, shdr.sh_offset, shdr.sh_size, shdr.sh_link, shdr.sh_info, shdr.sh_addralign, shdr.sh_entsize, shdr.sh_offset + shdr.sh_size });
+    }
+}
+
 pub fn main() !u8 {
     var csh: capstone.csh = undefined;
     if (capstone.cs_open(capstone.CS_ARCH_X86, capstone.CS_MODE_64, &csh) != capstone.CS_ERR_OK) {
@@ -687,6 +717,7 @@ pub fn main() !u8 {
     const off = 0x111f;
     switch (ei_class) {
         .ELFCLASS32 => {
+            print_elf(EI_CLASS.ELFCLASS32, elf);
             var temp_data = get_off_data(EI_CLASS.ELFCLASS32, elf, off).?;
             const data_to_patch = BlockInfo{ .block = &temp_data, .addr = off_to_addr(EI_CLASS.ELFCLASS32, elf, off).? };
             const patch_buff_size: libelf.Elf32_Word = @intCast(min_buf_size(csh, temp_data, test_patch.len));
@@ -699,17 +730,18 @@ pub fn main() !u8 {
                 const err = libelf.elf_errno();
                 std.debug.print("errno = {}\nerr = {s}\n", .{ err, libelf.elf_errmsg(err) });
             }
-
+            print_elf(EI_CLASS.ELFCLASS32, elf);
             std.debug.print("image size = {}\n", .{temp});
         },
         .ELFCLASS64 => {
+            print_elf(EI_CLASS.ELFCLASS64, elf);
             var temp_data = get_off_data(EI_CLASS.ELFCLASS64, elf, off).?;
             const data_to_patch = BlockInfo{ .block = &temp_data, .addr = off_to_addr(EI_CLASS.ELFCLASS64, elf, off).? };
             const patch_buff_size: libelf.Elf64_Word = @intCast(min_buf_size(csh, temp_data, test_patch.len));
             const data_patch_buff = get_patch_buf(EI_CLASS.ELFCLASS64, elf, patch_buff_size).?;
             data_patch_buff.block.* = patch_buff[0..patch_buff_size];
             try insert_patch(csh, ksh, data_to_patch, data_patch_buff, test_patch);
-
+            print_elf(EI_CLASS.ELFCLASS64, elf);
             const temp = libelf.elf_update(elf, libelf.ELF_C_WRITE);
             if (temp == -1) {
                 const err = libelf.elf_errno();
