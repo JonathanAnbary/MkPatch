@@ -203,6 +203,80 @@ const BlockInfo: type = struct {
     addr: u64,
 };
 
+fn gen_less_then_shdr(ei_class: EI_CLASS) fn (elf: *libelf.Elf, u8, u8) bool {
+    return struct {
+        pub fn foo(elf: *libelf.Elf, lhs: u8, rhs: u8) bool {
+            const lhs_scn = libelf.elf_getscn(elf, lhs).?;
+            const lhs_shdr = elf_getshdr(ei_class, lhs_scn).?;
+            const rhs_scn = libelf.elf_getscn(elf, rhs).?;
+            const rhs_shdr = elf_getshdr(ei_class, rhs_scn).?;
+            return (lhs_shdr.sh_offset < rhs_shdr.sh_offset) or ((lhs_shdr.sh_offset == rhs_shdr.sh_offset) and (lhs < rhs));
+        }
+    }.foo;
+}
+
+fn gen_less_then_phdr(comptime ei_class: EI_CLASS) fn (phdr_table: []ElfPhdr(ei_class), u8, u8) bool {
+    return struct {
+        pub fn foo(phdr_table: []ElfPhdr(ei_class), lhs: u8, rhs: u8) bool {
+            return (phdr_table[lhs].p_offset < phdr_table[rhs].p_offset) or ((phdr_table[lhs].p_offset == phdr_table[rhs].p_offset) and (lhs < rhs));
+        }
+    }.foo;
+}
+
+fn adjust_elf_file(comptime ei_class: EI_CLASS, elf: *libelf.Elf, phdr_table: []ElfPhdr(ei_class), after: ElfOff(ei_class), amount: ElfWord(ei_class)) void {
+    var max_sortable_phdr_table: [std.math.maxInt(u8)]u8 = comptime blk: {
+        var temp: [std.math.maxInt(u8)]u8 = undefined;
+        for (0..std.math.maxInt(u8)) |i| {
+            temp[i] = i;
+        }
+        break :blk temp;
+    };
+    var max_sortable_shdr_table: [std.math.maxInt(u8)]u8 = comptime blk: {
+        var temp: [std.math.maxInt(u8)]u8 = undefined;
+        for (0..std.math.maxInt(u8)) |i| {
+            temp[i] = i;
+        }
+        break :blk temp;
+    };
+    const sortable_phdr_table = max_sortable_phdr_table[0..phdr_table.len];
+    std.sort.heap(u8, sortable_phdr_table, phdr_table, gen_less_then_phdr(ei_class));
+    var shdrnum: usize = undefined;
+    if (libelf.elf_getshdrnum(elf, &shdrnum) == -1) {
+        unreachable;
+    }
+    const sortable_shdr_table = max_sortable_shdr_table[0..shdrnum];
+    std.sort.heap(u8, sortable_shdr_table, elf, gen_less_then_shdr(ei_class));
+    var cume_adjust: ElfWord(ei_class) = 0;
+    var min_adjust: ElfWord(ei_class) = amount;
+    var shdr_idx: u8 = 0;
+    std.debug.print("sortable_phdr_table = {any}\n", .{sortable_phdr_table});
+    std.debug.print("sortable_shdr_table = {any}\n", .{sortable_shdr_table});
+    for (sortable_phdr_table) |phdr_idx| {
+        if (phdr_table[phdr_idx].p_offset > after) {
+            min_adjust += @as(ElfWord(ei_class), @intCast(phdr_table[phdr_idx].p_align - (min_adjust % phdr_table[phdr_idx].p_align)));
+            while (shdr_idx < sortable_shdr_table.len) {
+                const scn = libelf.elf_getscn(elf, shdr_idx).?;
+                const shdr = elf_getshdr(ei_class, scn).?;
+                if (shdr.sh_offset > (phdr_table[phdr_idx].p_offset + phdr_table[phdr_idx].p_filesz)) {
+                    break;
+                }
+                if (shdr.sh_offset < phdr_table[phdr_idx].p_offset) {
+                    shdr_idx += 1;
+                    continue;
+                }
+                shdr.sh_offset += min_adjust;
+                shdr_idx += 1;
+            }
+            phdr_table[phdr_idx].p_offset += min_adjust;
+            cume_adjust += min_adjust;
+        }
+    }
+    var ehdr: *ElfEhdr(ei_class) = elf_getehdr(ei_class, elf).?;
+    if (ehdr.e_shoff > after) {
+        ehdr.e_shoff += cume_adjust;
+    }
+}
+
 // do I maybe need tto make sure the adjustments I make stay aligned?
 fn adjust_segs_after(comptime ei_class: EI_CLASS, phdr_table: []ElfPhdr(ei_class), after: ElfOff(ei_class), amount: ElfWord(ei_class)) void {
     var cume_adjust: ElfWord(ei_class) = 0;
@@ -515,11 +589,12 @@ fn get_patch_buf(comptime ei_class: EI_CLASS, elf: *libelf.Elf, wanted_size: Elf
         phdr_table[code_cave.seg_idx].p_memsz += wanted_size;
         // adjusting the file offsets of the segments and secttions, other things might also need adjustment but I truly dont know.
         std.debug.print("flagging = {}\n", .{libelf.elf_flagelf(elf, libelf.ELF_C_SET, libelf.ELF_F_LAYOUT)});
-        adjust_segs_after(ei_class, phdr_table, patch_buf_off, wanted_size);
-        std.debug.print("flagging = {}\n ", .{libelf.elf_flagphdr(elf, libelf.ELF_C_SET, libelf.ELF_F_DIRTY)});
+        adjust_elf_file(ei_class, elf, phdr_table, patch_buf_off, wanted_size);
+        // adjust_segs_after(ei_class, phdr_table, patch_buf_off, wanted_size);
+        // std.debug.print("flagging = {}\n ", .{libelf.elf_flagphdr(elf, libelf.ELF_C_SET, libelf.ELF_F_DIRTY)});
         // the minus one is because we need to adjust the section that starts right at the start of the segment (unlike with the segment where we just adjusted it).
-        const cume_adjust = adjust_scns_after(ei_class, elf, patch_buf_off, wanted_size);
-        adjust_ehdr(ei_class, elf, patch_buf_off, cume_adjust);
+        // const cume_adjust = adjust_scns_after(ei_class, elf, patch_buf_off, wanted_size);
+        // adjust_ehdr(ei_class, elf, patch_buf_off, cume_adjust);
     } else {
         const new_phdr_table = new_seg_code_buf(ei_class, elf, phdr_table, wanted_size);
         patch_buf_off = new_phdr_table[new_phdr_table.len - 1].p_offset;
