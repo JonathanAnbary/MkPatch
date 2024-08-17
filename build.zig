@@ -36,9 +36,15 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    exe.addObjectFile(b.path("lib/libelf/libelf.a"));
-    exe.addObjectFile(b.path("lib/capstone-5.0/libcapstone.a"));
-    exe.addObjectFile(b.path("lib/keystone-9.2.0/libkeystone.a"));
+    exe.addLibraryPath(b.path("lib/libelf/"));
+    exe.addLibraryPath(b.path("lib/capstone-5.0/"));
+    exe.addLibraryPath(b.path("lib/keystone-9.2.0/"));
+    exe.linkSystemLibrary2("elf", .{ .preferred_link_mode = .dynamic });
+    exe.linkSystemLibrary2("capstone", .{ .preferred_link_mode = .dynamic });
+    exe.linkSystemLibrary2("keystone", .{ .preferred_link_mode = .dynamic });
+    // exe.addObjectFile(b.path("lib/libelf/libelf.a"));
+    // exe.addObjectFile(b.path("lib/capstone-5.0/libcapstone.a"));
+    // exe.addObjectFile(b.path("lib/keystone-9.2.0/libkeystone.a"));
     exe.addIncludePath(b.path("include/libelf/"));
     exe.addIncludePath(b.path("include/capstone-5.0/"));
     exe.addIncludePath(b.path("include/keystone/"));
