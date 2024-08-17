@@ -249,9 +249,11 @@ fn adjust_elf_file(comptime ei_class: EI_CLASS, elf: *libelf.Elf, phdr_table: []
     var cume_adjust: ElfWord(ei_class) = 0;
     var min_adjust: ElfWord(ei_class) = amount;
     var sorted_shdr_idx: u8 = 0;
+    var sorted_phdr_idx: u8 = 0;
     std.debug.print("sortable_phdr_table = {any}\n", .{sortable_phdr_table});
     std.debug.print("sortable_shdr_table = {any}\n", .{sortable_shdr_table});
-    for (sortable_phdr_table) |phdr_idx| {
+    while (sorted_phdr_idx < sortable_phdr_table.len) : (sorted_phdr_idx += 1) {
+        const phdr_idx = sortable_phdr_table[sorted_phdr_idx];
         if (phdr_table[phdr_idx].p_offset > after) {
             const diff = (min_adjust % phdr_table[phdr_idx].p_align);
             if (diff != 0) {
@@ -260,7 +262,11 @@ fn adjust_elf_file(comptime ei_class: EI_CLASS, elf: *libelf.Elf, phdr_table: []
             while (sorted_shdr_idx < sortable_shdr_table.len) {
                 const scn = libelf.elf_getscn(elf, sortable_shdr_table[sorted_shdr_idx]).?;
                 const shdr = elf_getshdr(ei_class, scn).?;
-                if (shdr.sh_offset > (phdr_table[phdr_idx].p_offset + phdr_table[phdr_idx].p_filesz)) {
+                // we look at the start of the next segment instead of the end of the current one to account for sections between segments (or after all of the segments).
+                // there is no need to consider sections which come before the segments since the patch always occures in a segement.
+                if ((sorted_phdr_idx < sortable_phdr_table.len - 1) and
+                    (shdr.sh_offset > (phdr_table[sortable_phdr_table[sorted_phdr_idx + 1]].p_offset)))
+                {
                     break;
                 }
                 if (shdr.sh_offset < phdr_table[phdr_idx].p_offset) {
@@ -274,11 +280,11 @@ fn adjust_elf_file(comptime ei_class: EI_CLASS, elf: *libelf.Elf, phdr_table: []
             cume_adjust += min_adjust;
         }
     }
-    for (sortable_shdr_table[sorted_shdr_idx..]) |shdr_idx| {
-        const scn = libelf.elf_getscn(elf, shdr_idx).?;
-        const shdr = elf_getshdr(ei_class, scn).?;
-        shdr.sh_offset += min_adjust;
-    }
+    // for (sortable_shdr_table[sorted_shdr_idx..]) |shdr_idx| {
+    //     const scn = libelf.elf_getscn(elf, shdr_idx).?;
+    //     const shdr = elf_getshdr(ei_class, scn).?;
+    //     shdr.sh_offset += min_adjust;
+    // }
     var ehdr: *ElfEhdr(ei_class) = elf_getehdr(ei_class, elf).?;
     if (ehdr.e_shoff > after) {
         ehdr.e_shoff += cume_adjust;
