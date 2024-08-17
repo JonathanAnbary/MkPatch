@@ -409,18 +409,18 @@ fn find_code_cave(comptime ei_class: EI_CLASS, phdr_table: []ElfPhdr(ei_class), 
     var prev: u16 = find(0, @intCast(phdr_table.len), 1, phdr_table, gen_is_load(ei_class)).?;
     var curr: u16 = find(prev + 1, @intCast(phdr_table.len), 1, phdr_table, gen_is_load(ei_class)).?;
     if (gen_is_code_seg(ei_class)(phdr_table[prev])) {
-        // if (wanted_size < phdr_table[prev].p_vaddr) {
-        //     return SegEdge{ .seg_idx = prev, .is_end = false };
-        // }
+        if (wanted_size < phdr_table[prev].p_vaddr) {
+            return SegEdge{ .seg_idx = prev, .is_end = false };
+        }
         if ((phdr_table[prev].p_memsz <= phdr_table[prev].p_filesz) and (wanted_size < (phdr_table[curr].p_vaddr - (phdr_table[prev].p_vaddr + phdr_table[prev].p_memsz)))) {
             return SegEdge{ .seg_idx = prev, .is_end = true };
         }
     }
     while (find(curr + 1, @intCast(phdr_table.len), 1, phdr_table, gen_is_load(ei_class))) |next| {
         if (gen_is_code_seg(ei_class)(phdr_table[curr])) {
-            // if (wanted_size < (phdr_table[curr].p_vaddr - (phdr_table[prev].p_vaddr + phdr_table[prev].p_memsz))) {
-            //     return SegEdge{ .seg_idx = curr, .is_end = false };
-            // }
+            if (wanted_size < (phdr_table[curr].p_vaddr - (phdr_table[prev].p_vaddr + phdr_table[prev].p_memsz))) {
+                return SegEdge{ .seg_idx = curr, .is_end = false };
+            }
             if ((phdr_table[curr].p_memsz <= phdr_table[curr].p_filesz) and (wanted_size < (phdr_table[next].p_vaddr - (phdr_table[curr].p_vaddr + phdr_table[curr].p_memsz)))) {
                 return SegEdge{ .seg_idx = curr, .is_end = true };
             }
@@ -429,9 +429,9 @@ fn find_code_cave(comptime ei_class: EI_CLASS, phdr_table: []ElfPhdr(ei_class), 
         curr = next;
     }
     if (gen_is_code_seg(ei_class)(phdr_table[curr])) {
-        // if (wanted_size < (phdr_table[curr].p_vaddr - (phdr_table[prev].p_vaddr + phdr_table[prev].p_memsz))) {
-        //     return SegEdge{ .seg_idx = curr, .is_end = false };
-        // }
+        if (wanted_size < (phdr_table[curr].p_vaddr - (phdr_table[prev].p_vaddr + phdr_table[prev].p_memsz))) {
+            return SegEdge{ .seg_idx = curr, .is_end = false };
+        }
         if (wanted_size < (std.math.maxInt(ElfWord(ei_class)) - phdr_table[curr].p_vaddr)) {
             return SegEdge{ .seg_idx = curr, .is_end = true };
         }
