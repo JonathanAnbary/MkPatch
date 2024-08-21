@@ -4,7 +4,8 @@ const std = @import("std");
 // const keystone = @import("../translated-include/keystone/keystone.zig");
 const libelf = @cImport(@cInclude("libelf.h"));
 const capstone = @cImport(@cInclude("capstone/capstone.h"));
-const keystone = @cImport(@cInclude("keystone.h"));
+// const keystone = @cImport(@cInclude("keystone.h"));
+const jmp_assembler = @import("jmp_assembler");
 
 const EI_CLASS: type = enum(u2) {
     ELFCLASS32 = libelf.ELFCLASS32,

@@ -4,6 +4,16 @@ const std = @import("std");
 // declaratively construct a build graph that will be executed by an external
 // runner.
 pub fn build(b: *std.Build) void {
+    const jmp_asm_generator = b.addExecutable(.{
+        .name = "generate_jmp_asmbler",
+        .root_source_file = b.path("tools/generate_jmp_asmbler.zig"),
+        .target = b.host,
+    });
+    jmp_asm_generator.addLibraryPath(b.path("lib/keystone-9.2.0/"));
+    jmp_asm_generator.linkSystemLibrary2("keystone", .{ .preferred_link_mode = .dynamic });
+
+    const tool_step = b.addRunArtifact(jmp_asm_generator);
+    const output = tool_step.addOutputFileArg("jmp_assembler.zig");
     // Standard target options allows the person running `zig build` to choose
     // what target to build for. Here we do not override the defaults, which
     // means any target is allowed, and the default is native. Other options
@@ -38,18 +48,22 @@ pub fn build(b: *std.Build) void {
 
     exe.addLibraryPath(b.path("lib/libelf/"));
     exe.addLibraryPath(b.path("lib/capstone-5.0/"));
-    exe.addLibraryPath(b.path("lib/keystone-9.2.0/"));
+    // exe.addLibraryPath(b.path("lib/keystone-9.2.0/"));
     exe.linkSystemLibrary2("elf", .{ .preferred_link_mode = .dynamic });
     exe.linkSystemLibrary2("capstone", .{ .preferred_link_mode = .dynamic });
-    exe.linkSystemLibrary2("keystone", .{ .preferred_link_mode = .dynamic });
+    // exe.linkSystemLibrary2("keystone", .{ .preferred_link_mode = .dynamic });
     // exe.addObjectFile(b.path("lib/libelf/libelf.a"));
     // exe.addObjectFile(b.path("lib/capstone-5.0/libcapstone.a"));
     // exe.addObjectFile(b.path("lib/keystone-9.2.0/libkeystone.a"));
     exe.addIncludePath(b.path("include/libelf/"));
     exe.addIncludePath(b.path("include/capstone-5.0/"));
-    exe.addIncludePath(b.path("include/keystone/"));
+    // exe.addIncludePath(b.path("include/keystone/"));
     exe.linkLibC();
     exe.linkLibCpp();
+
+    exe.root_module.addAnonymousImport("jmp_assembler", .{
+        .root_source_file = output,
+    });
 
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default
