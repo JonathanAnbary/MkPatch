@@ -2,40 +2,29 @@ const std = @import("std");
 const keystone = @import("../translated-include/keystone/keystone.zig");
 // const keystone = @cImport(@cInclude("keystone.h"));
 //
-//
+
+const ARM: type = enum(u8) {
+    ARM = keystone.KS_MODE_ARM,
+    THUMB = keystone.KS_MODE_THUMB,
+    ARMV8 = keystone.KS_MODE_ARM + keystone.KS_MODE_V8,
+};
+
+const ARM64: type = enum(u8) {
+    ARM64 = 0,
+};
+
+const MIPS: type = enum(u8) {
+    MIPS32 = keystone.KS_MODE_MIPS32,
+    MIPS64 = keystone.KS_MODE_MIPS64,
+    MICRO = keystone.KS_MODE_MICRO,
+    MIPS3 = keystone.KS_MODE_MIPS3,
+    MIPS32R6 = keystone.KS_MODE_MIPS32R6,
+};
+
 const MODE: type = enum(u8) {
     MODE_16 = keystone.KS_MODE_16,
     MODE_32 = keystone.KS_MODE_32,
     MODE_64 = keystone.KS_MODE_64,
-};
-
-const ARM: type = enum(u8) {
-    ARM_LE = keystone.KS_MODE_ARM + keystone.KS_MODE_LITTLE_ENDIAN,
-    THUMB_LE = keystone.KS_MODE_THUMB + keystone.KS_MODE_LITTLE_ENDIAN,
-    ARM_BE = keystone.KS_MODE_ARM + keystone.KS_MODE_BIG_ENDIAN,
-    THUMB_BE = keystone.KS_MODE_THUMB + keystone.KS_MODE_BIG_ENDIAN,
-    ARM_V8_LE = keystone.KS_MODE_ARM + keystone.KS_MODE_LITTLE_ENDIAN + keystone.KS_MODE_V8,
-    THUMB_V8_LE = keystone.KS_MODE_THUMB + keystone.KS_MODE_LITTLE_ENDIAN + keystone.KS_MODE_V8,
-    ARM_V8_BE = keystone.KS_MODE_ARM + keystone.KS_MODE_BIG_ENDIAN + keystone.KS_MODE_V8,
-    THUMB_V8_BE = keystone.KS_MODE_THUMB + keystone.KS_MODE_BIG_ENDIAN + keystone.KS_MODE_V8,
-};
-
-const ARM64: type = enum(u8) {
-    LITTLE_ENDIAN = keystone.KS_MODE_LITTLE_ENDIAN,
-};
-
-const HEXAGON: type = enum(u8) {
-    LITTLE_ENDIAN = keystone.KS_MODE_LITTLE_ENDIAN,
-};
-
-const MIPS: type = enum(u8) {
-    MIPS32_LE = keystone.KS_MODE_MIPS32 + keystone.KS_MODE_LITTLE_ENDIAN,
-    MIPS64_LE = keystone.KS_MODE_MIPS64 + keystone.KS_MODE_LITTLE_ENDIAN,
-    MIPS32_BE = keystone.KS_MODE_MIPS32 + keystone.KS_MODE_BIG_ENDIAN,
-    MIPS64_BE = keystone.KS_MODE_MIPS64 + keystone.KS_MODE_BIG_ENDIAN,
-    // MICRO = keystone.KS_MODE_MICRO,
-    // MIPS3 = keystone.KS_MODE_MIPS3,
-    // MIPS32R6 = keystone.KS_MODE_MIPS32R6,
 };
 
 const PPC: type = enum(u8) {
@@ -54,8 +43,17 @@ const SYSTEMZ: type = enum(u8) {
     BIG_ENDIAN = keystone.KS_MODE_BIG_ENDIAN,
 };
 
+const HEXAGON: type = enum(u8) {
+    LITTLE_ENDIAN = keystone.KS_MODE_LITTLE_ENDIAN,
+};
+
 const EVM: type = enum(u8) {
     LITTLE_ENDIAN = keystone.KS_MODE_LITTLE_ENDIAN,
+};
+
+const ENDIAN: type = enum(u8) {
+    LITTLE_ENDIAN = keystone.KS_MODE_LITTLE_ENDIAN,
+    BIG_ENDIAN = keystone.KS_MODE_BIG_ENDIAN,
 };
 
 const ARCH: type = enum(u4) {
@@ -70,6 +68,18 @@ const ARCH: type = enum(u4) {
     EVM = keystone.KS_ARCH_EVM,
     MAX = keystone.KS_ARCH_MAX,
 };
+
+const IS_ENDIANABLE = std.EnumSet(ARCH).init(std.enums.EnumFieldStruct(ARCH, type, null){
+    .ARM = true,
+    .ARM64 = true,
+    .MIPS = true,
+    .X86 = true,
+    .PPC = true,
+    .SPARC = true,
+    .SYSTEMZ = false,
+    .HEXAGON = false,
+    .EVM = false,
+});
 
 const ARCH_MODE_MAP = std.EnumArray(ARCH, type).init(std.enums.EnumFieldStruct(ARCH, type, null){
     .ARM = ARM,
@@ -126,7 +136,8 @@ pub fn main() !void {
     defer output_file.close();
     for (ARCH.values()) |arch| {
         for (ARCH_MODE_MAP.get(arch)) |mode| {
-            assemble_max_jmp(arch, mode);
+            if (IS_ENDIANABLE.contains(arch)) {
+                assemble_max_jmp(arch, mode + );
         }
     }
 
