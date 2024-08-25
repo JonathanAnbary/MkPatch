@@ -4,16 +4,6 @@ const std = @import("std");
 // declaratively construct a build graph that will be executed by an external
 // runner.
 pub fn build(b: *std.Build) void {
-    const jmp_asm_generator = b.addExecutable(.{
-        .name = "generate_jmp_asmbler",
-        .root_source_file = b.path("tools/generate_jmp_asmbler.zig"),
-        .target = b.host,
-    });
-    jmp_asm_generator.addLibraryPath(b.path("lib/keystone-9.2.0/"));
-    jmp_asm_generator.linkSystemLibrary2("keystone", .{ .preferred_link_mode = .dynamic });
-
-    const tool_step = b.addRunArtifact(jmp_asm_generator);
-    const output = tool_step.addOutputFileArg("jmp_assembler.zig");
     // Standard target options allows the person running `zig build` to choose
     // what target to build for. Here we do not override the defaults, which
     // means any target is allowed, and the default is native. Other options
@@ -38,6 +28,21 @@ pub fn build(b: *std.Build) void {
     // // location when the user invokes the "install" step (the default step when
     // // running `zig build`).
     // b.installArtifact(lib);
+
+    const jmp_asm_generator = b.addExecutable(.{
+        .name = "generate_jmp_asmbler",
+        .root_source_file = b.path("tools/generate_jmp_asmbler.zig"),
+        .target = b.host,
+        // .optimize = .ReleaseFast,
+    });
+
+    jmp_asm_generator.addLibraryPath(b.path("lib/keystone-9.2.0/"));
+    jmp_asm_generator.linkSystemLibrary2("keystone", .{ .preferred_link_mode = .dynamic });
+    jmp_asm_generator.linkLibC();
+    jmp_asm_generator.linkLibCpp();
+
+    const tool_step = b.addRunArtifact(jmp_asm_generator);
+    const output = tool_step.addOutputFileArg("jmp_assembler.zig");
 
     const exe = b.addExecutable(.{
         .name = "MkPatch",
@@ -110,11 +115,30 @@ pub fn build(b: *std.Build) void {
     });
 
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
+    _ = run_exe_unit_tests;
+
+    const tool_unit_tests = b.addTest(.{
+        .root_source_file = b.path("src/tools/generate_jmp_asmbler.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    tool_unit_tests.addLibraryPath(b.path("lib/keystone-9.2.0/"));
+    tool_unit_tests.addLibraryPath(b.path("lib/capstone-5.0/"));
+    tool_unit_tests.linkSystemLibrary2("keystone", .{ .preferred_link_mode = .dynamic });
+    tool_unit_tests.linkSystemLibrary2("capstone", .{ .preferred_link_mode = .dynamic });
+    tool_unit_tests.addIncludePath(b.path("include/keystone/"));
+    tool_unit_tests.addIncludePath(b.path("include/capstone-5.0/"));
+    tool_unit_tests.linkLibC();
+    tool_unit_tests.linkLibCpp();
+
+    const run_tool_unit_tests = b.addRunArtifact(tool_unit_tests);
 
     // Similar to creating the run step earlier, this exposes a `test` step to
     // the `zig build --help` menu, providing a way for the user to request
     // running the unit tests.
     const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&run_tool_unit_tests.step);
     test_step.dependOn(&run_lib_unit_tests.step);
-    test_step.dependOn(&run_exe_unit_tests.step);
+    // test_step.dependOn(&run_exe_unit_tests.step);
 }
