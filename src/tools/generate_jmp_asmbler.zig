@@ -1,8 +1,8 @@
 const std = @import("std");
 const capstone = @cImport(@cInclude("capstone.h"));
 const keystone = @cImport(@cInclude("keystone.h"));
-// const capstone = @import("../translated-include/capstone-5.0/capstone/capstone.zig");
-// const keystone = @import("../translated-include/keystone/keystone.zig");
+// const capstone = @import("../../translated-include/capstone-5.0/capstone/capstone.zig");
+// const keystone = @import("../../translated-include/keystone/keystone.zig");
 
 const ARCH: type = enum(u4) {
     ARM = keystone.KS_ARCH_ARM,
@@ -65,7 +65,7 @@ const EVM: type = enum(u8) {
     LITTLE_ENDIAN = keystone.KS_MODE_LITTLE_ENDIAN,
 };
 
-const KS_ENDIAN: type = enum(u8) {
+const KS_ENDIAN: type = enum(u32) {
     LITTLE_ENDIAN = keystone.KS_MODE_LITTLE_ENDIAN,
     BIG_ENDIAN = keystone.KS_MODE_BIG_ENDIAN,
 };
@@ -144,9 +144,11 @@ const ARCH_MODE_MAP = std.EnumArray(ARCH, type).init(std.enums.EnumFieldStruct(A
     .EVM = EVM,
 });
 
-fn assemble(arch: ARCH, mode: MODE, assembly: []const u8) ![]u8 {
+fn assemble(arch: keystone.ks_arch, mode: c_int, assembly: []const u8, addr: u64) ![]u8 {
     var temp_ksh: ?*keystone.ks_engine = null;
-    if ((keystone.ks_open(@intFromEnum(arch), @intFromEnum(mode), &temp_ksh) != keystone.KS_ERR_OK) or (temp_ksh == null)) {
+    const err: keystone.ks_err = keystone.ks_open(arch, mode, &temp_ksh);
+    if ((err != keystone.KS_ERR_OK) or (temp_ksh == null)) {
+        std.debug.print("err = {x}\n", .{err});
         unreachable;
     }
     const ksh: *keystone.ks_engine = temp_ksh.?;
@@ -155,8 +157,8 @@ fn assemble(arch: ARCH, mode: MODE, assembly: []const u8) ![]u8 {
     var encode: ?[*]u8 = null;
     var siz: usize = undefined;
     var enc_count: usize = undefined;
-    if (keystone.ks_asm(ksh, @as(?[*]const u8, @ptrCast(assembly)), 0, &encode, &siz, &enc_count) != keystone.KS_ERR_OK) {
-        // std.debug.print("ERROR: ks_asm() failed & count = {}, error = {}\n", .{ enc_count, keystone.ks_errno(ksh) });
+    if (keystone.ks_asm(ksh, @as(?[*]const u8, @ptrCast(assembly)), addr, &encode, &siz, &enc_count) != keystone.KS_ERR_OK) {
+        std.debug.print("ERROR: ks_asm() failed & count = {}, error = {}\n", .{ enc_count, keystone.ks_errno(ksh) });
         unreachable;
     }
     // the caller is responsible for calling keystone.ks_free.
@@ -165,9 +167,53 @@ fn assemble(arch: ARCH, mode: MODE, assembly: []const u8) ![]u8 {
 }
 
 test "test assemble max jmp" {
-    const assembled = try assemble(ARCH.X86, MODE.MODE_64, "jmp 0xffff");
+    const pos = 0x400000;
+    const target = 0x401000;
+    _ = target;
+    // if the instruction starts at pos, you want to get to target.
+    // the bytes that will make such jump = (target - (pos + 0x8)) >> 0x2. (there are 3 bytes available for the jmp)
+    // for example:
+    // pos = 0x400000
+    // target = 0x401000
+    // jmp bytes = (0x401000 - (0x400000 + 0x8)) >> 0x2 = 0x400
+    const assembled2 = try assemble(@intFromEnum(ARCH.ARM), @intFromEnum(ARM.ARM), "bal #0x401000", pos); // 0x48d160 = 0x123456 * 4 + 0x8.
+    defer keystone.ks_free(assembled2.ptr);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0xfe, 0x03, 0x00, 0xea }, assembled2); // the 0xea is the bal instruction, it comes at the end for some reason.
+    // bytes that will make such jump = (target - pos) >> 0x2. (there are 26 bits available for the jmp).
+    // for example:
+    // pos = 0x400000
+    // target = 0x401000
+    // jmp bytes = 0x400
+    const assembled5 = try assemble(@intFromEnum(ARCH.ARM64), @intFromEnum(ARM64.ARM64), "b #0x401000", pos); // 0x491158 = (0x123456 + 0x1000) << 2.
+    defer keystone.ks_free(assembled5.ptr);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0x00, 0x04, 0x00, 0x14 }, assembled5);
+    // bytes that will make such jump = target >> 0x2. (there are 26 bits available for the jmp).
+    // for example:
+    // pos = 0x400000
+    // target = 0x401000
+    // jmp bytes = 0x401000 >> 0x2 = 0x100400
+    const assembled3 = try assemble(@intFromEnum(ARCH.MIPS), @intFromEnum(MIPS.MIPS64), "j 0x401000", pos); // the jmp target is absolute.
+    defer keystone.ks_free(assembled3.ptr);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0x00, 0x04, 0x10, 0x08, 0, 0, 0, 0 }, assembled3);
+    // bytes that will make such jump = target - (pos + 0x5). (there are 4 bytes available for this jmp).
+    // for example:
+    // pos = 0x400000
+    // target = 0x401000
+    // jmp bytes = 0x401000 - (0x400000 + 0x5) = 0xffb
+    const assembled = try assemble(@intFromEnum(ARCH.X86), @intFromEnum(MODE.MODE_64), "jmp 0x401000", pos); // the offset is from the end of the instruction 0x1234567d = 0x12345678 + 0x5.
     defer keystone.ks_free(assembled.ptr);
-    std.debug.print("\n{x}\n", .{assembled});
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0xe9, 0xfb, 0x0f, 0x00, 0x00 }, assembled);
+    // bytes that will make such jump = target - pos. (there are 26 bits available for this jmp).
+    // for example:
+    // pos = 0x400000
+    // target = 0x401000
+    // jmp bytes = 0x401000 - 0x400000 = 0x1000
+    const assembled4 = try assemble(@intFromEnum(ARCH.PPC), @intFromEnum(PPC.PPC64), "b 0x401000", pos); // the jmp target is absolute.
+    defer keystone.ks_free(assembled4.ptr);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0x00, 0x10, 0x00, 0x48 }, assembled4);
+    const assembled6 = try assemble(@intFromEnum(ARCH.SPARC), @intFromEnum(SPARC.SPARC32), "b 0x401000", pos); // the jmp target is absolute.
+    defer keystone.ks_free(assembled6.ptr);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0x00, 0x10, 0x00, 0x48 }, assembled6);
 }
 
 fn get_operand_offset(arch: capstone.cs_arch, mode: capstone.cs_mode, asmb: []const u8, op_idx: u8) void {
