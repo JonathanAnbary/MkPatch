@@ -53,7 +53,7 @@ const SPARC: type = enum(u8) {
     V9 = keystone.KS_MODE_V9,
 };
 
-const SYSTEMZ: type = enum(u8) {
+const SYSTEMZ: type = enum(u32) {
     BIG_ENDIAN = keystone.KS_MODE_BIG_ENDIAN,
 };
 
@@ -65,60 +65,10 @@ const EVM: type = enum(u8) {
     LITTLE_ENDIAN = keystone.KS_MODE_LITTLE_ENDIAN,
 };
 
-const KS_ENDIAN: type = enum(u32) {
+const ENDIAN: type = enum(u32) {
     LITTLE_ENDIAN = keystone.KS_MODE_LITTLE_ENDIAN,
     BIG_ENDIAN = keystone.KS_MODE_BIG_ENDIAN,
 };
-
-const CS_ENDIAN: type = enum(u8) {
-    LITTLE_ENDIAN = keystone.CS_MODE_LITTLE_ENDIAN,
-    BIG_ENDIAN = keystone.CS_MODE_BIG_ENDIAN,
-};
-
-fn ks2cs_mode(comptime ks_const: keystone.ks_mode) capstone.cs_mode {
-    return switch (ks_const) {
-        // 1
-        inline keystone.KS_MODE_ARM => capstone.CS_MODE_ARM,
-        // 2
-        inline keystone.KS_MODE_16 => capstone.CS_MODE_16,
-        // 4
-        inline keystone.KS_MODE_32 => capstone.CS_MODE_32,
-        inline keystone.KS_MODE_MIPS32 => capstone.CS_MODE_MIPS32,
-        // inline keystone.KS_MODE_SPARC32 => capstone.CS_MODE_SPARC32,
-        // inline keystone.KS_MODE_PPC32 => capstone.CS_MODE_PPC32,
-        // 8
-        inline keystone.KS_MODE_MIPS64 => capstone.CS_MODE_MIPS64,
-        inline keystone.KS_MODE_64 => capstone.CS_MODE_64,
-        // inline keystone.KS_MODE_PPC64 => capstone.CS_MODE_PPC64,
-        // inline keystone.KS_MODE_SPARC64 => capstone.CS_MODE_SPARC64,
-        // 16
-        inline keystone.KS_MODE_THUMB => capstone.CS_MODE_THUMB,
-        inline keystone.KS_MODE_MICRO => capstone.CS_MODE_MICRO,
-        inline keystone.KS_MODE_QPX => capstone.CS_MODE_QPX,
-        inline keystone.KS_MODE_V9 => capstone.CS_MODE_V9,
-        // 32
-        inline keystone.KS_MODE_MIPS3 => capstone.CS_MODE_MIPS3,
-        // 64
-        inline keystone.KS_MODE_MIPS32R6 => capstone.CS_MODE_MIPS32R6,
-        // 65
-        inline keystone.KS_MODE_ARM + capstone.CS_MODE_V8 => capstone.CS_MODE_ARM + capstone.CS_MODE_V8,
-    };
-}
-
-fn ks2cs_arch(comptime ks_const: keystone.ks_arch) capstone.cs_arch {
-    return switch (ks_const) {
-        inline keystone.KS_ARCH_ARM => capstone.CS_ARCH_ARM,
-        inline keystone.KS_ARCH_ARM64 => capstone.CS_ARCH_ARM64,
-        inline keystone.KS_ARCH_MIPS => capstone.CS_ARCH_MIPS,
-        inline keystone.KS_ARCH_X86 => capstone.CS_ARCH_X86,
-        inline keystone.KS_ARCH_PPC => capstone.CS_ARCH_PPC,
-        inline keystone.KS_ARCH_SPARC => capstone.CS_ARCH_SPARC,
-        inline keystone.KS_ARCH_SYSTEMZ => capstone.CS_ARCH_SYSZ,
-        inline keystone.KS_ARCH_HEXAGON => capstone.CS_ARCH_XCORE, // TODO: make sure that HEXAGON == XCORE
-        inline keystone.KS_ARCH_EVM => capstone.CS_ARCH_EVM,
-        inline keystone.KS_ARCH_MAX => capstone.CS_ARCH_MAX,
-    };
-}
 
 const IS_ENDIANABLE = std.EnumSet(ARCH).init(std.enums.EnumFieldStruct(ARCH, type, null){
     .ARM = true,
@@ -133,16 +83,83 @@ const IS_ENDIANABLE = std.EnumSet(ARCH).init(std.enums.EnumFieldStruct(ARCH, typ
 });
 
 const ARCH_MODE_MAP = std.EnumArray(ARCH, type).init(std.enums.EnumFieldStruct(ARCH, type, null){
+    .X86 = MODE,
     .ARM = ARM,
     .ARM64 = ARM64,
     .MIPS = MIPS,
-    .X86 = MODE,
     .PPC = PPC,
     .SPARC = SPARC,
     .SYSTEMZ = SYSTEMZ,
     .HEXAGON = HEXAGON,
     .EVM = EVM,
+    .MAX = undefined,
 });
+
+fn to_ks_mode(comptime arch: ARCH, comptime mode: ARCH_MODE_MAP.get(arch)) c_int {
+    return @intFromEnum(mode);
+}
+fn to_cs_mode(comptime arch: ARCH, comptime mode: ARCH_MODE_MAP.get(arch)) capstone.cs_mode {
+    return switch (arch) {
+        .X86 => switch (mode) {
+            .MODE_16 => capstone.CS_MODE_16,
+            .MODE_32 => capstone.CS_MODE_32,
+            .MODE_64 => capstone.CS_MODE_64,
+        },
+        .ARM => switch (mode) {
+            .ARM => capstone.CS_MODE_ARM,
+            .THUMB => capstone.CS_MODE_THUMB,
+            .ARMV8 => capstone.CS_MODE_ARM + capstone.CS_MODE_V8,
+        },
+        .ARM64 => switch (mode) {
+            .ARM64 => 0,
+        },
+        .MIPS => switch (mode) {
+            .MIPS32 => capstone.CS_MODE_MIPS32,
+            .MIPS64 => capstone.CS_MODE_MIPS64,
+            .MICRO => capstone.CS_MODE_MICRO,
+            .MIPS3 => capstone.CS_MODE_MIPS3,
+            .MIPS32R6 => capstone.CS_MODE_MIPS32R6,
+        },
+        .PPC => switch (mode) {
+            .PPC32 => capstone.CS_MODE_PPC32,
+            .PPC64 => capstone.CS_MODE_PPC64,
+            .QPX => capstone.CS_MODE_QPX,
+        },
+        .SPARC => switch (mode) {
+            .SPARC32 => capstone.CS_MODE_SPARC32,
+            .SPARC64 => capstone.CS_MODE_SPARC64,
+            .V9 => capstone.CS_MODE_V9,
+        },
+        .SYSTEMZ => switch (mode) {
+            .BIG_ENDIAN => capstone.CS_MODE_BIG_ENDIAN,
+        },
+        .HEXAGON => switch (mode) {
+            .LITTLE_ENDIAN => capstone.CS_MODE_LITTLE_ENDIAN,
+        },
+        .EVM => switch (mode) {
+            .LITTLE_ENDIAN => capstone.CS_MODE_LITTLE_ENDIAN,
+        },
+        .MAX => @compileError("MAX is not an architecture and thus has no modes."),
+    };
+}
+
+fn to_ks_arch(comptime arch: ARCH) keystone.ks_arch {
+    return @intFromEnum(arch);
+}
+fn to_cs_arch(comptime arch: ARCH) capstone.cs_arch {
+    return switch (arch) {
+        inline .ARM => capstone.CS_ARCH_ARM,
+        inline .ARM64 => capstone.CS_ARCH_ARM64,
+        inline .MIPS => capstone.CS_ARCH_MIPS,
+        inline .X86 => capstone.CS_ARCH_X86,
+        inline .PPC => capstone.CS_ARCH_PPC,
+        inline .SPARC => capstone.CS_ARCH_SPARC,
+        inline .SYSTEMZ => capstone.CS_ARCH_SYSZ,
+        inline .HEXAGON => capstone.CS_ARCH_XCORE, // TODO: make sure that HEXAGON == XCORE
+        inline .EVM => capstone.CS_ARCH_EVM,
+        inline .MAX => capstone.CS_ARCH_MAX,
+    };
+}
 
 fn assemble(arch: keystone.ks_arch, mode: c_int, assembly: []const u8, addr: u64) ![]u8 {
     var temp_ksh: ?*keystone.ks_engine = null;
@@ -168,15 +185,14 @@ fn assemble(arch: keystone.ks_arch, mode: c_int, assembly: []const u8, addr: u64
 
 test "test assemble max jmp" {
     const pos = 0x400000;
-    const target = 0x401000;
-    _ = target;
+    const target = "0x401000";
     // if the instruction starts at pos, you want to get to target.
     // the bytes that will make such jump = (target - (pos + 0x8)) >> 0x2. (there are 3 bytes available for the jmp)
     // for example:
     // pos = 0x400000
     // target = 0x401000
     // jmp bytes = (0x401000 - (0x400000 + 0x8)) >> 0x2 = 0x400
-    const assembled2 = try assemble(@intFromEnum(ARCH.ARM), @intFromEnum(ARM.ARM), "bal #0x401000", pos); // 0x48d160 = 0x123456 * 4 + 0x8.
+    const assembled2 = try assemble(to_ks_arch(ARCH.ARM), to_ks_mode(ARCH.ARM, ARM.ARM), "bal #" ++ target, pos); // 0x48d160 = 0x123456 * 4 + 0x8.
     defer keystone.ks_free(assembled2.ptr);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 0xfe, 0x03, 0x00, 0xea }, assembled2); // the 0xea is the bal instruction, it comes at the end for some reason.
     // bytes that will make such jump = (target - pos) >> 0x2. (there are 26 bits available for the jmp).
@@ -184,7 +200,7 @@ test "test assemble max jmp" {
     // pos = 0x400000
     // target = 0x401000
     // jmp bytes = 0x400
-    const assembled5 = try assemble(@intFromEnum(ARCH.ARM64), @intFromEnum(ARM64.ARM64), "b #0x401000", pos); // 0x491158 = (0x123456 + 0x1000) << 2.
+    const assembled5 = try assemble(to_ks_arch(ARCH.ARM64), to_ks_mode(ARCH.ARM64, ARM64.ARM64), "b #" ++ target, pos); // 0x491158 = (0x123456 + 0x1000) << 2.
     defer keystone.ks_free(assembled5.ptr);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 0x00, 0x04, 0x00, 0x14 }, assembled5);
     // bytes that will make such jump = target >> 0x2. (there are 26 bits available for the jmp).
@@ -192,7 +208,7 @@ test "test assemble max jmp" {
     // pos = 0x400000
     // target = 0x401000
     // jmp bytes = 0x401000 >> 0x2 = 0x100400
-    const assembled3 = try assemble(@intFromEnum(ARCH.MIPS), @intFromEnum(MIPS.MIPS64), "j 0x401000", pos); // the jmp target is absolute.
+    const assembled3 = try assemble(to_ks_arch(ARCH.MIPS), to_ks_mode(ARCH.MIPS, MIPS.MIPS64), "j " ++ target, pos); // the jmp target is absolute.
     defer keystone.ks_free(assembled3.ptr);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 0x00, 0x04, 0x10, 0x08, 0, 0, 0, 0 }, assembled3);
     // bytes that will make such jump = target - (pos + 0x5). (there are 4 bytes available for this jmp).
@@ -200,7 +216,7 @@ test "test assemble max jmp" {
     // pos = 0x400000
     // target = 0x401000
     // jmp bytes = 0x401000 - (0x400000 + 0x5) = 0xffb
-    const assembled = try assemble(@intFromEnum(ARCH.X86), @intFromEnum(MODE.MODE_64), "jmp 0x401000", pos); // the offset is from the end of the instruction 0x1234567d = 0x12345678 + 0x5.
+    const assembled = try assemble(to_ks_arch(ARCH.X86), to_ks_mode(ARCH.X86, MODE.MODE_64), "jmp " ++ target, pos); // the offset is from the end of the instruction 0x1234567d = 0x12345678 + 0x5.
     defer keystone.ks_free(assembled.ptr);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 0xe9, 0xfb, 0x0f, 0x00, 0x00 }, assembled);
     // bytes that will make such jump = target - pos. (there are 26 bits available for this jmp).
@@ -208,20 +224,29 @@ test "test assemble max jmp" {
     // pos = 0x400000
     // target = 0x401000
     // jmp bytes = 0x401000 - 0x400000 = 0x1000
-    const assembled4 = try assemble(@intFromEnum(ARCH.PPC), @intFromEnum(PPC.PPC64), "b 0x401000", pos); // the jmp target is absolute.
+    const assembled4 = try assemble(to_ks_arch(ARCH.PPC), to_ks_mode(ARCH.PPC, PPC.PPC64), "b " ++ target, pos); // the jmp target is absolute.
     defer keystone.ks_free(assembled4.ptr);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 0x00, 0x10, 0x00, 0x48 }, assembled4);
-    const assembled6 = try assemble(@intFromEnum(ARCH.SPARC), @intFromEnum(SPARC.SPARC32), "b 0x401000", pos); // the jmp target is absolute.
-    defer keystone.ks_free(assembled6.ptr);
-    try std.testing.expectEqualSlices(u8, &[_]u8{ 0x00, 0x10, 0x00, 0x48 }, assembled6);
+
+    //const assembled6 = try assemble(to_ks_arch(ARCH.SPARC), to_ks_mode(ARCH.SPARC, SPARC.SPARC32), "b " ++ target, pos); // the jmp target is absolute.
+    //defer keystone.ks_free(assembled6.ptr);
+    //try std.testing.expectEqualSlices(u8, &[_]u8{ 0x00, 0x10, 0x00, 0x48 }, assembled6);
 }
 
-fn get_operand_offset(arch: capstone.cs_arch, mode: capstone.cs_mode, asmb: []const u8, op_idx: u8) void {
-    _ = op_idx;
+const Range: type = struct {
+    off: u8,
+    size: u8,
+};
+
+fn get_operand_range(arch: capstone.cs_arch, mode: capstone.cs_mode, asmb: []const u8, op_idx: u8) ?Range {
     var csh: capstone.csh = undefined;
-    if (capstone.cs_open(arch, mode + CS_ENDIAN.BIG_ENDIAN, &csh) != capstone.CS_ERR_OK) {
+    if (capstone.cs_open(arch, mode, &csh) != capstone.CS_ERR_OK) {
         unreachable;
     }
+    if (capstone.cs_option(csh, capstone.CS_OPT_DETAIL, capstone.CS_OPT_ON) != capstone.CS_ERR_OK) {
+        unreachable;
+    }
+    std.debug.print("\n{}\n", .{csh});
     const insn: *capstone.cs_insn = capstone.cs_malloc(csh);
     defer capstone.cs_free(insn, 1);
     defer _ = capstone.cs_close(&csh);
@@ -239,20 +264,40 @@ fn get_operand_offset(arch: capstone.cs_arch, mode: capstone.cs_mode, asmb: []co
         unreachable;
     }
     switch (arch) {
-        .ARM => std.debug.print("{}\n", .{insn.detail.*.unnamed_0.arm}),
-        .ARM64 => std.debug.print("{}\n", .{insn.detail.*.unnamed_0.arm64}),
-        .MIPS => std.debug.print("{}\n", .{insn.detail.*.unnamed_0.mips}),
-        .X86 => std.debug.print("{}\n", .{insn.detail.*.unnamed_0.x86}),
-        .PPC => std.debug.print("{}\n", .{insn.detail.*.unnamed_0.ppc}),
-        .SPARC => std.debug.print("{}\n", .{insn.detail.*.unnamed_0.sparc}),
-        .SYSTEMZ => std.debug.print("{}\n", .{insn.detail.*.unnamed_0.sysz}),
-        .HEXAGON => std.debug.print("{}\n", .{insn.detail.*.unnamed_0.xcore}), // TODO: make sure HEXAGON == XCORE
-        .EVM => std.debug.print("{}\n", .{insn.detail.*.unnamed_0.evm}),
+        capstone.CS_ARCH_ARM => std.debug.print("{}\n", .{insn.detail.*.unnamed_0.arm}),
+        capstone.CS_ARCH_ARM64 => std.debug.print("{}\n", .{insn.detail.*.unnamed_0.arm64}),
+        capstone.CS_ARCH_MIPS => std.debug.print("{}\n", .{insn.detail.*.unnamed_0.mips}),
+        capstone.CS_ARCH_X86 => {
+            if (op_idx >= insn.detail.*.unnamed_0.x86.op_count) return null;
+            var off: u8 = @intCast(std.mem.indexOf(u8, &insn.detail.*.unnamed_0.x86.opcode, &[_]u8{0}) orelse 4);
+            std.debug.print("0off = {}\n", .{off});
+            for (insn.detail.*.unnamed_0.x86.operands[0..op_idx]) |op| {
+                off += op.size;
+            }
+            std.debug.print("{}\n", .{insn.detail.*.unnamed_0.x86.operands[op_idx]});
+
+            return Range{ .off = off, .size = insn.detail.*.unnamed_0.x86.operands[op_idx].size };
+        },
+        capstone.CS_ARCH_PPC => std.debug.print("{}\n", .{insn.detail.*.unnamed_0.ppc}),
+        // not currently implementing since I dont even assemble a max jmp for these arches.
+        //.SPARC => std.debug.print("{}\n", .{insn.detail.*.unnamed_0.sparc}),
+        //.SYSTEMZ => std.debug.print("{}\n", .{insn.detail.*.unnamed_0.sysz}),
+        //.HEXAGON => std.debug.print("{}\n", .{insn.detail.*.unnamed_0.xcore}), // TODO: make sure HEXAGON == XCORE
+        //.EVM => std.debug.print("{}\n", .{insn.detail.*.unnamed_0.evm}),
         else => unreachable,
     }
+    return null;
 }
 
-test "op idx gettings" {}
+test "op idx gettings" {
+    const pos = 0x400000;
+    const target = "0x401000";
+    const assembled = try assemble(to_ks_arch(ARCH.X86), to_ks_mode(ARCH.X86, MODE.MODE_64), "jmp " ++ target, pos);
+    defer keystone.ks_free(assembled.ptr);
+    const op_range = get_operand_range(to_cs_arch(ARCH.X86), to_cs_mode(ARCH.X86, MODE.MODE_64), assembled, 0).?;
+    std.debug.print("\n{}\n", .{op_range});
+    try std.testing.expect(op_range.off == 1 and op_range.size == 4);
+}
 
 pub fn main() !void {
     var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -265,17 +310,13 @@ pub fn main() !void {
 
     const output_file_path = args[1];
 
-    var output_file = std.fs.cwd().createFile(output_file_path, .{}) catch |err| {
-        fatal("unable to open '{s}': {s}", .{ output_file_path, @errorName(err) });
-    };
-    defer output_file.close();
     for (ARCH.values()) |arch| {
         for (ARCH_MODE_MAP.get(arch)) |mode| {
             if (IS_ENDIANABLE.contains(arch)) {
-                const be_max_jmp = assemble(arch, mode + KS_ENDIAN.BIG_ENDIAN);
+                const be_max_jmp = assemble(arch, mode + ENDIAN.BIG_ENDIAN);
                 defer keystone.ks_free(be_max_jmp);
 
-                const le_max_jmp = assemble(arch, mode + KS_ENDIAN.LITTLE_ENDIAN);
+                const le_max_jmp = assemble(arch, mode + ENDIAN.LITTLE_ENDIAN);
                 defer keystone.ks_free(le_max_jmp);
             } else {
                 const max_jmp = assemble(arch, mode);
@@ -284,6 +325,10 @@ pub fn main() !void {
         }
     }
 
+    var output_file = std.fs.cwd().createFile(output_file_path, .{}) catch |err| {
+        fatal("unable to open '{s}': {s}", .{ output_file_path, @errorName(err) });
+    };
+    defer output_file.close();
     try output_file.writeAll(
         \\pub const Person = struct {
         \\   age: usize = 18,

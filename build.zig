@@ -37,7 +37,9 @@ pub fn build(b: *std.Build) void {
     });
 
     jmp_asm_generator.addLibraryPath(b.path("lib/keystone-9.2.0/"));
-    jmp_asm_generator.linkSystemLibrary2("keystone", .{ .preferred_link_mode = .dynamic });
+    jmp_asm_generator.linkSystemLibrary2("keystone", .{});
+    jmp_asm_generator.addLibraryPath(b.path("lib/capstone-5.0/"));
+    jmp_asm_generator.linkSystemLibrary2("capstone", .{});
     jmp_asm_generator.linkLibC();
     jmp_asm_generator.linkLibCpp();
 
@@ -54,8 +56,8 @@ pub fn build(b: *std.Build) void {
     exe.addLibraryPath(b.path("lib/libelf/"));
     exe.addLibraryPath(b.path("lib/capstone-5.0/"));
     // exe.addLibraryPath(b.path("lib/keystone-9.2.0/"));
-    exe.linkSystemLibrary2("elf", .{ .preferred_link_mode = .dynamic });
-    exe.linkSystemLibrary2("capstone", .{ .preferred_link_mode = .dynamic });
+    exe.linkSystemLibrary2("elf", .{});
+    exe.linkSystemLibrary2("capstone", .{});
     // exe.linkSystemLibrary2("keystone", .{ .preferred_link_mode = .dynamic });
     // exe.addObjectFile(b.path("lib/libelf/libelf.a"));
     // exe.addObjectFile(b.path("lib/capstone-5.0/libcapstone.a"));
@@ -125,10 +127,10 @@ pub fn build(b: *std.Build) void {
 
     tool_unit_tests.addLibraryPath(b.path("lib/keystone-9.2.0/"));
     tool_unit_tests.addLibraryPath(b.path("lib/capstone-5.0/"));
-    tool_unit_tests.linkSystemLibrary2("keystone", .{ .preferred_link_mode = .dynamic });
-    tool_unit_tests.linkSystemLibrary2("capstone", .{ .preferred_link_mode = .dynamic });
+    tool_unit_tests.linkSystemLibrary2("keystone", .{});
+    tool_unit_tests.linkSystemLibrary2("capstone", .{});
     tool_unit_tests.addIncludePath(b.path("include/keystone/"));
-    tool_unit_tests.addIncludePath(b.path("include/capstone-5.0/"));
+    tool_unit_tests.addIncludePath(b.path("include/capstone-5.0/capstone/"));
     tool_unit_tests.linkLibC();
     tool_unit_tests.linkLibCpp();
 
