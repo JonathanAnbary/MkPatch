@@ -1,10 +1,7 @@
 const std = @import("std");
-// const libelf = @import("../translated-include/libelf/libelf.zig");
-// const capstone = @import("../translated-include/capstone-5.0/capstone/capstone.zig");
-// const keystone = @import("../translated-include/keystone/keystone.zig");
 const libelf = @cImport(@cInclude("libelf.h"));
 const capstone = @cImport(@cInclude("capstone/capstone.h"));
-// const keystone = @cImport(@cInclude("keystone.h"));
+const keystone = @cImport(@cInclude("keystone.h"));
 const jmp_assembler = @import("jmp_assembler");
 
 const EI_CLASS: type = enum(u2) {

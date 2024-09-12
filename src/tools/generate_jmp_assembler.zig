@@ -1,8 +1,6 @@
 const std = @import("std");
 const capstone = @cImport(@cInclude("capstone.h"));
 const keystone = @cImport(@cInclude("keystone.h"));
-// const capstone = @import("../../translated-include/capstone-5.0/capstone/capstone.zig");
-// const keystone = @import("../../translated-include/keystone/keystone.zig");
 
 const ARCH: type = enum(u4) {
     ARM = keystone.KS_ARCH_ARM,
@@ -82,7 +80,7 @@ const IS_ENDIANABLE = std.EnumSet(ARCH).init(std.enums.EnumFieldStruct(ARCH, typ
     .EVM = false,
 });
 
-const ARCH_MODE_MAP = std.EnumArray(ARCH, type).init(std.enums.EnumFieldStruct(ARCH, type, null){
+const ARCH_MODE_MAP = std.EnumMap(ARCH, type).init(std.enums.EnumFieldStruct(ARCH, type, null){
     .X86 = MODE,
     .ARM = ARM,
     .ARM64 = ARM64,
@@ -95,10 +93,11 @@ const ARCH_MODE_MAP = std.EnumArray(ARCH, type).init(std.enums.EnumFieldStruct(A
     .MAX = undefined,
 });
 
-fn to_ks_mode(comptime arch: ARCH, comptime mode: ARCH_MODE_MAP.get(arch)) c_int {
+fn to_ks_mode(arch: ARCH, mode: ARCH_MODE_MAP.get(arch)) c_int {
     return @intFromEnum(mode);
 }
-fn to_cs_mode(comptime arch: ARCH, comptime mode: ARCH_MODE_MAP.get(arch)) capstone.cs_mode {
+
+fn to_cs_mode(arch: ARCH, mode: ARCH_MODE_MAP.get(arch)) capstone.cs_mode {
     return switch (arch) {
         .X86 => switch (mode) {
             .MODE_16 => capstone.CS_MODE_16,
@@ -143,13 +142,13 @@ fn to_cs_mode(comptime arch: ARCH, comptime mode: ARCH_MODE_MAP.get(arch)) capst
     };
 }
 
-fn to_ks_arch(comptime arch: ARCH) keystone.ks_arch {
+fn to_ks_arch(arch: ARCH) keystone.ks_arch {
     return @intFromEnum(arch);
 }
-fn to_cs_arch(comptime arch: ARCH) capstone.cs_arch {
+fn to_cs_arch(arch: ARCH) capstone.cs_arch {
     return switch (arch) {
         inline .ARM => capstone.CS_ARCH_ARM,
-        inline .ARM64 => capstone.CS_ARCH_ARM64,
+        inline .ARM64 => capstone.CS_ARCH_AARCH64,
         inline .MIPS => capstone.CS_ARCH_MIPS,
         inline .X86 => capstone.CS_ARCH_X86,
         inline .PPC => capstone.CS_ARCH_PPC,
@@ -183,6 +182,19 @@ fn assemble(arch: keystone.ks_arch, mode: c_int, assembly: []const u8, addr: u64
     return encode.?[0..siz];
 }
 
+const ARCH_CTL_FLOW_MAP = std.EnumMap(ARCH, []const u8).init(std.enums.EnumFieldStruct(ARCH, []const u8, null){
+    .X86 = "jmp ",
+    .ARM = "bal #",
+    .ARM64 = "b #",
+    .MIPS = "j ",
+    .PPC = "b ",
+    .SPARC = SPARC,
+    .SYSTEMZ = SYSTEMZ,
+    .HEXAGON = HEXAGON,
+    .EVM = EVM,
+    .MAX = undefined,
+});
+
 test "test assemble max jmp" {
     const pos = 0x400000;
     const target = "0x401000";
@@ -191,8 +203,8 @@ test "test assemble max jmp" {
     // for example:
     // pos = 0x400000
     // target = 0x401000
-    // jmp bytes = (0x401000 - (0x400000 + 0x8)) >> 0x2 = 0x400
-    const assembled2 = try assemble(to_ks_arch(ARCH.ARM), to_ks_mode(ARCH.ARM, ARM.ARM), "bal #" ++ target, pos); // 0x48d160 = 0x123456 * 4 + 0x8.
+    // jmp bytes = (0x401000 - (0x400000 + 0x8)) >> 0x2 = 0x3fe
+    const assembled2 = try assemble(to_ks_arch(ARCH.ARM), to_ks_mode(ARCH.ARM, ARM.ARM), ARCH_CTL_FLOW_MAP.get(ARCH.ARM) ++ target, pos); // 0x48d160 = 0x123456 * 4 + 0x8.
     defer keystone.ks_free(assembled2.ptr);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 0xfe, 0x03, 0x00, 0xea }, assembled2); // the 0xea is the bal instruction, it comes at the end for some reason.
     // bytes that will make such jump = (target - pos) >> 0x2. (there are 26 bits available for the jmp).
@@ -200,7 +212,7 @@ test "test assemble max jmp" {
     // pos = 0x400000
     // target = 0x401000
     // jmp bytes = 0x400
-    const assembled5 = try assemble(to_ks_arch(ARCH.ARM64), to_ks_mode(ARCH.ARM64, ARM64.ARM64), "b #" ++ target, pos); // 0x491158 = (0x123456 + 0x1000) << 2.
+    const assembled5 = try assemble(to_ks_arch(ARCH.ARM64), to_ks_mode(ARCH.ARM64, ARM64.ARM64), ARCH_CTL_FLOW_MAP.get(ARCH.ARM64) ++ target, pos); // 0x491158 = (0x123456 + 0x1000) << 2.
     defer keystone.ks_free(assembled5.ptr);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 0x00, 0x04, 0x00, 0x14 }, assembled5);
     // bytes that will make such jump = target >> 0x2. (there are 26 bits available for the jmp).
@@ -208,7 +220,7 @@ test "test assemble max jmp" {
     // pos = 0x400000
     // target = 0x401000
     // jmp bytes = 0x401000 >> 0x2 = 0x100400
-    const assembled3 = try assemble(to_ks_arch(ARCH.MIPS), to_ks_mode(ARCH.MIPS, MIPS.MIPS64), "j " ++ target, pos); // the jmp target is absolute.
+    const assembled3 = try assemble(to_ks_arch(ARCH.MIPS), to_ks_mode(ARCH.MIPS, MIPS.MIPS64), ARCH_CTL_FLOW_MAP.get(ARCH.MIPS) ++ target, pos); // the jmp target is absolute.
     defer keystone.ks_free(assembled3.ptr);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 0x00, 0x04, 0x10, 0x08, 0, 0, 0, 0 }, assembled3);
     // bytes that will make such jump = target - (pos + 0x5). (there are 4 bytes available for this jmp).
@@ -216,7 +228,7 @@ test "test assemble max jmp" {
     // pos = 0x400000
     // target = 0x401000
     // jmp bytes = 0x401000 - (0x400000 + 0x5) = 0xffb
-    const assembled = try assemble(to_ks_arch(ARCH.X86), to_ks_mode(ARCH.X86, MODE.MODE_64), "jmp " ++ target, pos); // the offset is from the end of the instruction 0x1234567d = 0x12345678 + 0x5.
+    const assembled = try assemble(to_ks_arch(ARCH.X86), to_ks_mode(ARCH.X86, MODE.MODE_64), ARCH_CTL_FLOW_MAP.get(ARCH.X86) ++ target, pos); // the offset is from the end of the instruction 0x1234567d = 0x12345678 + 0x5.
     defer keystone.ks_free(assembled.ptr);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 0xe9, 0xfb, 0x0f, 0x00, 0x00 }, assembled);
     // bytes that will make such jump = target - pos. (there are 26 bits available for this jmp).
@@ -224,7 +236,7 @@ test "test assemble max jmp" {
     // pos = 0x400000
     // target = 0x401000
     // jmp bytes = 0x401000 - 0x400000 = 0x1000
-    const assembled4 = try assemble(to_ks_arch(ARCH.PPC), to_ks_mode(ARCH.PPC, PPC.PPC64), "b " ++ target, pos); // the jmp target is absolute.
+    const assembled4 = try assemble(to_ks_arch(ARCH.PPC), to_ks_mode(ARCH.PPC, PPC.PPC64), ARCH_CTL_FLOW_MAP.get(ARCH.PPC) ++ target, pos); // the jmp target is absolute.
     defer keystone.ks_free(assembled4.ptr);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 0x00, 0x10, 0x00, 0x48 }, assembled4);
 
@@ -233,70 +245,55 @@ test "test assemble max jmp" {
     //try std.testing.expectEqualSlices(u8, &[_]u8{ 0x00, 0x10, 0x00, 0x48 }, assembled6);
 }
 
-const Range: type = struct {
+const OpDesc: type = struct {
     off: u8,
     size: u8,
+    signedness: bool,
 };
 
-fn get_operand_range(arch: capstone.cs_arch, mode: capstone.cs_mode, asmb: []const u8, op_idx: u8) ?Range {
-    var csh: capstone.csh = undefined;
-    if (capstone.cs_open(arch, mode, &csh) != capstone.CS_ERR_OK) {
-        unreachable;
-    }
-    if (capstone.cs_option(csh, capstone.CS_OPT_DETAIL, capstone.CS_OPT_ON) != capstone.CS_ERR_OK) {
-        unreachable;
-    }
-    std.debug.print("\n{}\n", .{csh});
-    const insn: *capstone.cs_insn = capstone.cs_malloc(csh);
-    defer capstone.cs_free(insn, 1);
-    defer _ = capstone.cs_close(&csh);
-    var curr_code = asmb;
-    var curr_size = asmb.len;
-    const start: u64 = 0;
-    var end: u64 = start;
-    if (!capstone.cs_disasm_iter(
-        csh,
-        @as([*c][*c]const u8, @ptrCast(&curr_code)),
-        &curr_size,
-        &end,
-        insn,
-    )) {
-        unreachable;
-    }
-    switch (arch) {
-        capstone.CS_ARCH_ARM => std.debug.print("{}\n", .{insn.detail.*.unnamed_0.arm}),
-        capstone.CS_ARCH_ARM64 => std.debug.print("{}\n", .{insn.detail.*.unnamed_0.arm64}),
-        capstone.CS_ARCH_MIPS => std.debug.print("{}\n", .{insn.detail.*.unnamed_0.mips}),
-        capstone.CS_ARCH_X86 => {
-            if (op_idx >= insn.detail.*.unnamed_0.x86.op_count) return null;
-            var off: u8 = @intCast(std.mem.indexOf(u8, &insn.detail.*.unnamed_0.x86.opcode, &[_]u8{0}) orelse 4);
-            std.debug.print("0off = {}\n", .{off});
-            for (insn.detail.*.unnamed_0.x86.operands[0..op_idx]) |op| {
-                off += op.size;
-            }
-            std.debug.print("{}\n", .{insn.detail.*.unnamed_0.x86.operands[op_idx]});
-
-            return Range{ .off = off, .size = insn.detail.*.unnamed_0.x86.operands[op_idx].size };
+// cant manage to autogenerate these Ranges so for now Ill do them hardcoded.
+fn far_call_target_op_range(arch: ARCH, mode: u64) OpDesc {
+    return switch (arch) {
+        .X86 => switch (@as(MODE, @enumFromInt(mode))) {
+            .MODE_64 => OpDesc{ .off = 1, .size = 4, .signedness = true },
+            else => unreachable,
         },
-        capstone.CS_ARCH_PPC => std.debug.print("{}\n", .{insn.detail.*.unnamed_0.ppc}),
-        // not currently implementing since I dont even assemble a max jmp for these arches.
-        //.SPARC => std.debug.print("{}\n", .{insn.detail.*.unnamed_0.sparc}),
-        //.SYSTEMZ => std.debug.print("{}\n", .{insn.detail.*.unnamed_0.sysz}),
-        //.HEXAGON => std.debug.print("{}\n", .{insn.detail.*.unnamed_0.xcore}), // TODO: make sure HEXAGON == XCORE
-        //.EVM => std.debug.print("{}\n", .{insn.detail.*.unnamed_0.evm}),
+        .ARM => switch (@as(ARM, @enumFromInt(mode))) {
+            .ARM => OpDesc{ .off = 0, .size = 3, .signedness = true },
+            else => unreachable,
+        },
+        .ARM64 => switch (@as(ARM64, @enumFromInt(mode))) {
+            .ARM64 => OpDesc{ .off = 0, .size = 3, .signedness = true },
+        },
         else => unreachable,
-    }
-    return null;
+    };
 }
 
-test "op idx gettings" {
-    const pos = 0x400000;
-    const target = "0x401000";
-    const assembled = try assemble(to_ks_arch(ARCH.X86), to_ks_mode(ARCH.X86, MODE.MODE_64), "jmp " ++ target, pos);
-    defer keystone.ks_free(assembled.ptr);
-    const op_range = get_operand_range(to_cs_arch(ARCH.X86), to_cs_mode(ARCH.X86, MODE.MODE_64), assembled, 0).?;
-    std.debug.print("\n{}\n", .{op_range});
-    try std.testing.expect(op_range.off == 1 and op_range.size == 4);
+fn calc_jmp_op(arch: ARCH, mode: u64, target: u64, addr: u64) u64 {
+    return switch (arch) {
+        .X86 => switch (@as(MODE, @enumFromInt(mode))) {
+            .MODE_64 => target - (addr + 0x5),
+            else => unreachable,
+        },
+        .ARM => switch (@as(MODE, @enumFromInt(mode))) {
+            .ARM => (target - (addr + 0x8)) >> 0x2,
+            else => unreachable,
+        },
+        .ARM64 => switch (@as(MODE, @enumFromInt(mode))) {
+            .ARM64 => (target - addr) >> 0x2,
+        },
+        else => unreachable,
+    };
+}
+
+fn assemble_ctl_flow_transfer(arch: ARCH, mode: u64, endian: ENDIAN, target: u64, addr: u64, buf: []u8) ![]u8 {
+    const assembled2 = try assemble(to_ks_arch(arch), to_ks_mode(arch, mode), ARCH_CTL_FLOW_MAP.get(arch) ++ target, addr); // 0x48d160 = 0x123456 * 4 + 0x8.
+    defer keystone.ks_free(assembled2.ptr);
+    std.mem.copyForwards(u8, buf[0..assembled2.len], assembled2);
+    const target_op_desc = far_call_target_op_range(arch, mode);
+    const op_type: type = @Type(std.builtin.Type.Int{ .bits = target_op_desc.size * 8, .signedness = target_op_desc.signedness });
+    std.mem.writeInt(op_type, buf[target_op_desc.off..][0..target_op_desc.size], calc_jmp_op(arch, mode, target, addr), endian);
+    return buf;
 }
 
 pub fn main() !void {
@@ -310,16 +307,35 @@ pub fn main() !void {
 
     const output_file_path = args[1];
 
+    const output_file: std.fs.File = try std.fs.cwd().createFile(output_file_path, .{});
+
+    const w = std.io.bufferedWriter(output_file.writer()).writer();
+    // values which generate the ctl flow instruction with the maximum size.
+    const pos = 0x400000;
+    const target = "0x401000";
+
+    w.write(
+        \\fn get_ctl_flow_transfer_asm(arch: ARCH, mode: u64, endian: Endian, buf: []u8) []u8 {
+        \\return switch (arch) {
+    );
     for (ARCH.values()) |arch| {
+        w.write(".");
+        w.write(@tagName(arch));
+        w.write(" => switch (@as(");
+        w.write(@tagName(arch));
+        w.write(", @enumFromInt(mode))) {\n");
         for (ARCH_MODE_MAP.get(arch)) |mode| {
+            w.write(".");
+            w.write(@tagName(mode));
+            w.write(" => ");
             if (IS_ENDIANABLE.contains(arch)) {
-                const be_max_jmp = assemble(arch, mode + ENDIAN.BIG_ENDIAN);
+                const be_max_jmp = assemble(arch, mode + ENDIAN.BIG_ENDIAN, ARCH_CTL_FLOW_MAP(arch) ++ target, pos);
                 defer keystone.ks_free(be_max_jmp);
 
-                const le_max_jmp = assemble(arch, mode + ENDIAN.LITTLE_ENDIAN);
+                const le_max_jmp = assemble(arch, mode + ENDIAN.LITTLE_ENDIAN, ARCH_CTL_FLOW_MAP(arch) ++ target, pos);
                 defer keystone.ks_free(le_max_jmp);
             } else {
-                const max_jmp = assemble(arch, mode);
+                const max_jmp = assemble(arch, mode, ARCH_CTL_FLOW_MAP(arch) ++ target, pos);
                 defer keystone.ks_free(max_jmp);
             }
         }

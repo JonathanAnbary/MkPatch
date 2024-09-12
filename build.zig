@@ -38,7 +38,7 @@ pub fn build(b: *std.Build) void {
 
     jmp_asm_generator.addLibraryPath(b.path("lib/keystone-9.2.0/"));
     jmp_asm_generator.linkSystemLibrary2("keystone", .{});
-    jmp_asm_generator.addLibraryPath(b.path("lib/capstone-5.0/"));
+    jmp_asm_generator.addLibraryPath(b.path("lib/capstone/"));
     jmp_asm_generator.linkSystemLibrary2("capstone", .{});
     jmp_asm_generator.linkLibC();
     jmp_asm_generator.linkLibCpp();
@@ -54,7 +54,7 @@ pub fn build(b: *std.Build) void {
     });
 
     exe.addLibraryPath(b.path("lib/libelf/"));
-    exe.addLibraryPath(b.path("lib/capstone-5.0/"));
+    exe.addLibraryPath(b.path("lib/capstone/"));
     // exe.addLibraryPath(b.path("lib/keystone-9.2.0/"));
     exe.linkSystemLibrary2("elf", .{});
     exe.linkSystemLibrary2("capstone", .{});
@@ -63,7 +63,7 @@ pub fn build(b: *std.Build) void {
     // exe.addObjectFile(b.path("lib/capstone-5.0/libcapstone.a"));
     // exe.addObjectFile(b.path("lib/keystone-9.2.0/libkeystone.a"));
     exe.addIncludePath(b.path("include/libelf/"));
-    exe.addIncludePath(b.path("include/capstone-5.0/"));
+    exe.addIncludePath(b.path("include/capstone/"));
     // exe.addIncludePath(b.path("include/keystone/"));
     exe.linkLibC();
     exe.linkLibCpp();
@@ -119,28 +119,25 @@ pub fn build(b: *std.Build) void {
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
     _ = run_exe_unit_tests;
 
-    const tool_unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/tools/generate_jmp_asmbler.zig"),
+    const temp_unit_tests = b.addTest(.{
+        .root_source_file = b.path("src/ctl_flow_assembler.zig"),
         .target = target,
         .optimize = optimize,
     });
 
-    tool_unit_tests.addLibraryPath(b.path("lib/keystone-9.2.0/"));
-    tool_unit_tests.addLibraryPath(b.path("lib/capstone-5.0/"));
-    tool_unit_tests.linkSystemLibrary2("keystone", .{});
-    tool_unit_tests.linkSystemLibrary2("capstone", .{});
-    tool_unit_tests.addIncludePath(b.path("include/keystone/"));
-    tool_unit_tests.addIncludePath(b.path("include/capstone-5.0/capstone/"));
-    tool_unit_tests.linkLibC();
-    tool_unit_tests.linkLibCpp();
+    temp_unit_tests.addLibraryPath(b.path("lib/keystone-9.2.0/"));
+    temp_unit_tests.linkSystemLibrary2("keystone", .{});
+    temp_unit_tests.addIncludePath(b.path("include/keystone/"));
+    temp_unit_tests.linkLibC();
+    temp_unit_tests.linkLibCpp();
 
-    const run_tool_unit_tests = b.addRunArtifact(tool_unit_tests);
+    const run_temp_unit_tests = b.addRunArtifact(temp_unit_tests);
 
     // Similar to creating the run step earlier, this exposes a `test` step to
     // the `zig build --help` menu, providing a way for the user to request
     // running the unit tests.
     const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&run_tool_unit_tests.step);
+    test_step.dependOn(&run_temp_unit_tests.step);
     test_step.dependOn(&run_lib_unit_tests.step);
     // test_step.dependOn(&run_exe_unit_tests.step);
 }
