@@ -1,8 +1,7 @@
 const std = @import("std");
 const libelf = @cImport(@cInclude("libelf.h"));
 const capstone = @cImport(@cInclude("capstone/capstone.h"));
-const keystone = @cImport(@cInclude("keystone.h"));
-const jmp_assembler = @import("jmp_assembler");
+const ctl_flow_assembler = @import("ctl_flow_assembler.zig");
 
 const EI_CLASS: type = enum(u2) {
     ELFCLASS32 = libelf.ELFCLASS32,
@@ -398,23 +397,8 @@ fn calc_min_move(csh: capstone.csh, insns: []const u8, wanted_size: u64) u64 {
     return end - start;
 }
 
-fn insert_jmp(ksh: *keystone.ks_engine, patch_loc: []u8, target_addr: i65) !usize {
-    const max_jmp_asm_size: comptime_int = comptime blk: {
-        break :blk "jmp ".len + std.fmt.count("{}", .{std.math.minInt(i128)}) + 1;
-    };
-    var encode: ?[*]u8 = null;
-    var siz: usize = undefined;
-    var enc_count: usize = undefined;
-    var jmp_insn_asm_buf: [max_jmp_asm_size]u8 = undefined;
-    const jmp_asm = try std.fmt.bufPrintZ(&jmp_insn_asm_buf, "jmp {};", .{target_addr});
-    if (keystone.ks_asm(ksh, @as(?[*]const u8, @ptrCast(jmp_asm)), 0, &encode, &siz, &enc_count) != keystone.KS_ERR_OK) {
-        // std.debug.print("ERROR: ks_asm() failed & count = {}, error = {}\n", .{ enc_count, keystone.ks_errno(ksh) });
-        unreachable;
-    }
-    defer keystone.ks_free(encode);
-    std.debug.print("jmp ({s}) = {x}\n", .{ jmp_asm, encode.?[0..siz] });
-    @memcpy(patch_loc[0..siz], encode.?[0..siz]);
-    return siz;
+fn insert_jmp(ctlfh: ctl_flow_assembler.CtlFlowAssembler, patch_loc: []u8, target: u64, addr: u64) !usize {
+    return (try ctlfh.assemble_ctl_flow_transfer(target, addr, patch_loc)).len;
 }
 
 fn find_code_cave(comptime ei_class: EI_CLASS, phdr_table: []ElfPhdr(ei_class), wanted_size: u64) ?SegEdge {
@@ -637,7 +621,7 @@ fn min_buf_size(csh: capstone.csh, insn: []const u8, patch_len: u64) u64 {
 
 fn insert_patch(
     csh: capstone.csh,
-    ksh: *keystone.ks_engine,
+    ctlfh: ctl_flow_assembler.CtlFlowAssembler,
     to_patch: BlockInfo,
     patch_buf: BlockInfo,
     patch_data: []const u8,
@@ -645,17 +629,15 @@ fn insert_patch(
     const move_insn_size: u64 = @intCast(calc_min_move(csh, to_patch.block.*, MAX_JMP_SIZE));
     @memcpy(patch_buf.block.*[0..patch_data.len], patch_data);
     @memcpy(patch_buf.block.*[patch_data.len .. patch_data.len + move_insn_size], to_patch.block.*[0..move_insn_size]);
-
-    const rel_change: i65 = @as(i65, @intCast(patch_buf.addr)) - @as(i65, @intCast(to_patch.addr));
     std.debug.print("inserting escape jmp\n", .{});
     std.debug.print("escape_jmp_addr = {x}\ntarget_addr = {x}\nmoved_insn_size = {x}\n", .{ to_patch.addr, patch_buf.addr, move_insn_size });
-    _ = try insert_jmp(ksh, to_patch.block.*, rel_change);
+    _ = try insert_jmp(ctlfh, to_patch.block.*, patch_buf.addr, to_patch.addr);
     const jmp_back_insn_addr = patch_buf.addr + patch_data.len + move_insn_size;
     const jmp_back_target_addr = to_patch.addr + move_insn_size;
 
     std.debug.print("inserting jmp back\n", .{});
     std.debug.print("jmp_back_addr = {x}\naddr = {x}\nmoved_insn_size = {x}\n", .{ jmp_back_insn_addr, to_patch.addr, move_insn_size });
-    _ = try insert_jmp(ksh, patch_buf.block.*[patch_data.len + move_insn_size ..], @as(i65, @intCast(jmp_back_target_addr)) - jmp_back_insn_addr);
+    _ = try insert_jmp(ctlfh, patch_buf.block.*[patch_data.len + move_insn_size ..], jmp_back_target_addr, jmp_back_insn_addr);
 }
 
 fn print_elf(comptime ei_class: EI_CLASS, elf: *libelf.Elf) void {
@@ -686,12 +668,7 @@ pub fn main() !u8 {
         unreachable;
     }
     defer _ = capstone.cs_close(&csh);
-    var temp_ksh: ?*keystone.ks_engine = null;
-    if ((keystone.ks_open(keystone.KS_ARCH_X86, keystone.KS_MODE_64, &temp_ksh) != keystone.KS_ERR_OK) or (temp_ksh == null)) {
-        unreachable;
-    }
-    const ksh: *keystone.ks_engine = temp_ksh.?;
-    defer _ = keystone.ks_close(ksh);
+    const ctlfh = try ctl_flow_assembler.CtlFlowAssembler.init(ctl_flow_assembler.Arch.X86, @intFromEnum(ctl_flow_assembler.MODE.MODE_64), null);
     const stdout = std.io.getStdOut().writer();
     var args = std.process.args();
     _ = args.next().?;
@@ -734,7 +711,7 @@ pub fn main() !u8 {
             const patch_buff_size: libelf.Elf32_Word = @intCast(min_buf_size(csh, temp_data, test_patch.len));
             const data_patch_buff = get_patch_buf(EI_CLASS.ELFCLASS32, elf, patch_buff_size).?;
             data_patch_buff.block.* = patch_buff[0..patch_buff_size];
-            try insert_patch(csh, ksh, data_to_patch, data_patch_buff, test_patch);
+            try insert_patch(csh, ctlfh, data_to_patch, data_patch_buff, test_patch);
 
             const temp = libelf.elf_update(elf, libelf.ELF_C_WRITE);
             if (temp == -1) {
@@ -751,7 +728,7 @@ pub fn main() !u8 {
             const patch_buff_size: libelf.Elf64_Word = @intCast(min_buf_size(csh, temp_data, test_patch.len));
             const data_patch_buff = get_patch_buf(EI_CLASS.ELFCLASS64, elf, patch_buff_size).?;
             data_patch_buff.block.* = patch_buff[0..patch_buff_size];
-            try insert_patch(csh, ksh, data_to_patch, data_patch_buff, test_patch);
+            try insert_patch(csh, ctlfh, data_to_patch, data_patch_buff, test_patch);
             print_elf(EI_CLASS.ELFCLASS64, elf);
             const temp = libelf.elf_update(elf, libelf.ELF_C_WRITE);
             if (temp == -1) {

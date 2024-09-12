@@ -1,7 +1,7 @@
 const std = @import("std");
 const keystone = @cImport(@cInclude("keystone.h"));
 
-const ARCH: type = enum(u4) {
+pub const Arch: type = enum(u4) {
     ARM,
     ARM64,
     MIPS,
@@ -13,17 +13,17 @@ const ARCH: type = enum(u4) {
     EVM,
 };
 
-const ARM: type = enum(u8) {
+pub const ARM: type = enum(u8) {
     ARM,
     THUMB,
     ARMV8,
 };
 
-const ARM64: type = enum(u8) {
+pub const ARM64: type = enum(u8) {
     ARM64 = 0,
 };
 
-const MIPS: type = enum(u8) {
+pub const MIPS: type = enum(u8) {
     MIPS32,
     MIPS64,
     MICRO,
@@ -31,42 +31,42 @@ const MIPS: type = enum(u8) {
     MIPS32R6,
 };
 
-const MODE: type = enum(u8) {
+pub const MODE: type = enum(u8) {
     MODE_16,
     MODE_32,
     MODE_64,
 };
 
-const PPC: type = enum(u8) {
+pub const PPC: type = enum(u8) {
     PPC32,
     PPC64,
     QPX,
 };
 
-const SPARC: type = enum(u8) {
+pub const SPARC: type = enum(u8) {
     SPARC32,
     SPARC64,
     V9,
 };
 
-const SYSTEMZ: type = enum(u32) {
+pub const SYSTEMZ: type = enum(u32) {
     big,
 };
 
-const HEXAGON: type = enum(u8) {
+pub const HEXAGON: type = enum(u8) {
     little,
 };
 
-const EVM: type = enum(u8) {
+pub const EVM: type = enum(u8) {
     little,
 };
 
-const Endian: type = enum(u1) {
+pub const Endian: type = enum(u1) {
     little,
     big,
 };
 
-const IS_EndianABLE = std.EnumSet(ARCH).init(std.enums.EnumFieldStruct(ARCH, type, null){
+pub const IS_ENDIANABLE = std.EnumSet(Arch).init(std.enums.EnumFieldStruct(Arch, bool, false){
     .ARM = true,
     .ARM64 = true,
     .MIPS = true,
@@ -78,7 +78,7 @@ const IS_EndianABLE = std.EnumSet(ARCH).init(std.enums.EnumFieldStruct(ARCH, typ
     .EVM = false,
 });
 
-const ARCH_MODE_MAP = std.EnumMap(ARCH, type).init(std.enums.EnumFieldStruct(ARCH, ?type, null){
+pub const ARCH_MODE_MAP = std.EnumMap(Arch, type).init(std.enums.EnumFieldStruct(Arch, ?type, null){
     .X86 = MODE,
     .ARM = ARM,
     .ARM64 = ARM64,
@@ -90,71 +90,8 @@ const ARCH_MODE_MAP = std.EnumMap(ARCH, type).init(std.enums.EnumFieldStruct(ARC
     .EVM = EVM,
 });
 
-const ARCH_TO_CTL_FLOW = std.EnumMap(ARCH, []const u8).init(std.enums.EnumFieldStruct(ARCH, ?[]const u8, null){
-    .ARM = &[_]u8{ 0x00, 0x00, 0x00, 0xea },
-    .ARM64 = &[_]u8{ 0x00, 0x00, 0x00, 0x14 },
-    .MIPS = &[_]u8{ 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00 },
-    .X86 = &[_]u8{ 0xe9, 0x00, 0x00, 0x00, 0x00 },
-    .PPC = &[_]u8{ 0x00, 0x00, 0x00, 0x48 },
-    .SPARC = null,
-    .SYSTEMZ = null,
-    .HEXAGON = null,
-    .EVM = null,
-});
-
-const OpDesc: type = struct {
-    off: u8,
-    size: u8,
-    signedness: std.builtin.Signedness,
-};
-
-// cant manage to autogenerate these Ranges so for now Ill do them hardcoded.
-fn far_call_target_op_range(arch: ARCH, mode: u64, endian: Endian) OpDesc {
-    _ = endian;
-    return switch (arch) {
-        .X86 => switch (@as(MODE, @enumFromInt(mode))) {
-            .MODE_64 => OpDesc{ .off = 1, .size = 4 * 8, .signedness = .signed },
-            else => unreachable,
-        },
-        .ARM => switch (@as(ARM, @enumFromInt(mode))) {
-            .ARM => OpDesc{ .off = 0, .size = 3 * 8, .signedness = .signed },
-            else => unreachable,
-        },
-        .ARM64 => switch (@as(ARM64, @enumFromInt(mode))) {
-            .ARM64 => OpDesc{ .off = 0, .size = 3 * 8, .signedness = .signed },
-        },
-        .MIPS => switch (@as(MIPS, @enumFromInt(mode))) {
-            .MIPS64 => OpDesc{ .off = 0, .size = 26, .signedness = .unsigned },
-            else => unreachable,
-        },
-        else => unreachable,
-    };
-}
-
-fn calc_jmp_op(arch: ARCH, mode: u64, target: i128, addr: i128) i128 {
-    return switch (arch) {
-        .X86 => switch (@as(MODE, @enumFromInt(mode))) {
-            .MODE_64 => target - (addr + 0x5),
-            else => unreachable,
-        },
-        .ARM => switch (@as(ARM, @enumFromInt(mode))) {
-            .ARM => (target - (addr + 0x8)) >> 0x2,
-            else => unreachable,
-        },
-        .ARM64 => switch (@as(ARM64, @enumFromInt(mode))) {
-            .ARM64 => (target - addr) >> 0x2,
-        },
-        .MIPS => switch (@as(MIPS, @enumFromInt(mode))) {
-            .MIPS64 => target >> 0x2,
-            else => unreachable,
-        },
-        else => unreachable,
-    };
-}
-
 // TODO: check if all architectures use twos complement.
-fn twos_complement(comptime T: type, buffer: []u8, value: T, endian: Endian) void {
-    const bits = @typeInfo(T).Int.bits;
+fn twos_complement(value: i128, bits: u16, endian: Endian, buffer: []u8) void {
     const bytes = (bits + 7) / 8;
     var temp = blk: {
         if (value < 0) {
@@ -169,7 +106,7 @@ fn twos_complement(comptime T: type, buffer: []u8, value: T, endian: Endian) voi
     const save_buf: u8 = if (endian == .big) buffer[0] else buffer[bytes - 1];
     for (0..bytes) |i| {
         buffer[if (endian == .big) bytes - i - 1 else i] = @intCast(temp & 0xff);
-        temp = @intCast(@as(@Type(.{ .Int = .{ .bits = @max(bits, 64), .signedness = .unsigned } }), @intCast(temp)) >> 8);
+        temp >>= 8;
     }
     const one: u8 = 1;
     if (bits % 8 != 0) {
@@ -186,44 +123,138 @@ test "twos complement" {
     var expected: [100]u8 = undefined;
     var got: [100]u8 = undefined;
     inline for (types) |T| {
+        const bits = @typeInfo(T).Int.bits;
         const temp_expected = expected[0..@divExact(@typeInfo(T).Int.bits, 8)];
         const temp_got = got[0..@divExact(@typeInfo(T).Int.bits, 8)];
         std.mem.writeInt(T, temp_expected, std.math.minInt(T), .little);
-        twos_complement(T, temp_got, std.math.minInt(T), .little);
+        twos_complement(std.math.minInt(T), bits, .little, temp_got);
         try std.testing.expectEqualSlices(u8, temp_expected, temp_got);
         std.mem.writeInt(T, temp_expected, std.math.maxInt(T), .little);
-        twos_complement(T, temp_got, std.math.maxInt(T), .little);
+        twos_complement(std.math.maxInt(T), bits, .little, temp_got);
         try std.testing.expectEqualSlices(u8, temp_expected, temp_got);
         std.mem.writeInt(T, temp_expected, std.math.minInt(T), .big);
-        twos_complement(T, temp_got, std.math.minInt(T), .big);
+        twos_complement(std.math.minInt(T), bits, .big, temp_got);
         try std.testing.expectEqualSlices(u8, temp_expected, temp_got);
         std.mem.writeInt(T, temp_expected, std.math.maxInt(T), .big);
-        twos_complement(T, temp_got, std.math.maxInt(T), .big);
+        twos_complement(std.math.maxInt(T), bits, .big, temp_got);
         try std.testing.expectEqualSlices(u8, temp_expected, temp_got);
         if (@typeInfo(T).Int.signedness == .signed) {
             std.mem.writeInt(T, temp_expected, neg, .big);
-            twos_complement(T, temp_got, neg, .big);
+            twos_complement(neg, bits, .big, temp_got);
             try std.testing.expectEqualSlices(u8, temp_expected, temp_got);
             std.mem.writeInt(T, temp_expected, neg, .little);
-            twos_complement(T, temp_got, neg, .little);
+            twos_complement(neg, bits, .little, temp_got);
             try std.testing.expectEqualSlices(u8, temp_expected, temp_got);
         }
         std.mem.writeInt(T, temp_expected, pos, .big);
-        twos_complement(T, temp_got, pos, .big);
+        twos_complement(pos, bits, .big, temp_got);
         try std.testing.expectEqualSlices(u8, temp_expected, temp_got);
         std.mem.writeInt(T, temp_expected, pos, .little);
-        twos_complement(T, temp_got, pos, .little);
+        twos_complement(pos, bits, .little, temp_got);
         try std.testing.expectEqualSlices(u8, temp_expected, temp_got);
     }
 }
 
-fn assemble_ctl_flow_transfer(comptime arch: ARCH, comptime mode: u64, comptime endian: Endian, target: u64, addr: u64, buf: []u8) ![]u8 {
-    const ctl_flow_insn = ARCH_TO_CTL_FLOW.get(arch).?;
-    std.mem.copyForwards(u8, buf[0..ctl_flow_insn.len], ctl_flow_insn);
-    const target_op_desc = comptime far_call_target_op_range(arch, mode, endian);
-    const op_type: type = @Type(.{ .Int = .{ .bits = target_op_desc.size, .signedness = target_op_desc.signedness } });
-    twos_complement(op_type, buf[target_op_desc.off..][0 .. (target_op_desc.size + 7) / 8], @intCast(calc_jmp_op(arch, mode, target, addr)), endian);
-    return buf[0..ctl_flow_insn.len];
+pub const CtlFlowAssembler: type = struct {
+    arch: Arch,
+    mode: u64,
+    endian: ?Endian,
+
+    pub const Error: type = error{
+        ArchNotEndianable,
+    };
+
+    const Self = @This();
+
+    pub fn init(arch: Arch, mode: u64, endian: ?Endian) Error!Self {
+        if (IS_ENDIANABLE.contains(arch) and endian != null) return Error.ArchNotEndianable;
+        // TODO: check that the mode matches the arch.
+        // try @as(ARCH_MODE_MAP.get(arch), @enumFromInt(mode));
+        return .{
+            .arch = arch,
+            .mode = mode,
+            .endian = endian,
+        };
+    }
+
+    pub fn assemble_ctl_flow_transfer(self: *const Self, target: u64, addr: u64, buf: []u8) ![]u8 {
+        const ctl_flow_insn = ARCH_TO_CTL_FLOW.get(self.arch).?;
+        std.mem.copyForwards(u8, buf[0..ctl_flow_insn.len], ctl_flow_insn);
+        const target_op_desc = self.transfer_target_operand_range();
+        twos_complement(
+            self.calc_ctl_tranfer_op(target, addr),
+            target_op_desc.size,
+            self.endian orelse .little,
+            buf[target_op_desc.off..][0 .. (target_op_desc.size + 7) / 8],
+        );
+        return buf[0..ctl_flow_insn.len];
+    }
+
+    fn transfer_target_operand_range(self: *const Self) OpDesc {
+        _ = self.endian;
+        return switch (self.arch) {
+            .X86 => switch (@as(MODE, @enumFromInt(self.mode))) {
+                .MODE_64 => OpDesc{ .off = 1, .size = 4 * 8, .signedness = .signed },
+                else => unreachable,
+            },
+            .ARM => switch (@as(ARM, @enumFromInt(self.mode))) {
+                .ARM => OpDesc{ .off = 0, .size = 3 * 8, .signedness = .signed },
+                else => unreachable,
+            },
+            .ARM64 => switch (@as(ARM64, @enumFromInt(self.mode))) {
+                .ARM64 => OpDesc{ .off = 0, .size = 3 * 8, .signedness = .signed },
+            },
+            .MIPS => switch (@as(MIPS, @enumFromInt(self.mode))) {
+                .MIPS64 => OpDesc{ .off = 0, .size = 26, .signedness = .unsigned },
+                else => unreachable,
+            },
+            else => unreachable,
+        };
+    }
+
+    fn calc_ctl_tranfer_op(self: *const Self, target: i128, addr: i128) i128 {
+        return switch (self.arch) {
+            .X86 => switch (@as(MODE, @enumFromInt(self.mode))) {
+                .MODE_64 => target - (addr + 0x5),
+                else => unreachable,
+            },
+            .ARM => switch (@as(ARM, @enumFromInt(self.mode))) {
+                .ARM => (target - (addr + 0x8)) >> 0x2,
+                else => unreachable,
+            },
+            .ARM64 => switch (@as(ARM64, @enumFromInt(self.mode))) {
+                .ARM64 => (target - addr) >> 0x2,
+            },
+            .MIPS => switch (@as(MIPS, @enumFromInt(self.mode))) {
+                .MIPS64 => target >> 0x2,
+                else => unreachable,
+            },
+            else => unreachable,
+        };
+    }
+
+    const ARCH_TO_CTL_FLOW = std.EnumMap(Arch, []const u8).init(std.enums.EnumFieldStruct(Arch, ?[]const u8, null){
+        .ARM = &[_]u8{ 0x00, 0x00, 0x00, 0xea },
+        .ARM64 = &[_]u8{ 0x00, 0x00, 0x00, 0x14 },
+        .MIPS = &[_]u8{ 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00 },
+        .X86 = &[_]u8{ 0xe9, 0x00, 0x00, 0x00, 0x00 },
+        .PPC = &[_]u8{ 0x00, 0x00, 0x00, 0x48 },
+        .SPARC = null,
+        .SYSTEMZ = null,
+        .HEXAGON = null,
+        .EVM = null,
+    });
+
+    const OpDesc: type = struct {
+        off: u8,
+        size: u8,
+        signedness: std.builtin.Signedness,
+    };
+};
+
+fn assemble_ctl_flow_transfer(arch: Arch, mode: u64, endian: Endian, target: u64, addr: u64, buf: []u8) []u8 {
+    const ctl_flow_engine: CtlFlowAssembler = CtlFlowAssembler.init(arch, mode, endian);
+    return ctl_flow_engine.assemble_ctl_flow_transfer(target, addr, buf);
 }
 
 test "assemble control flow transfer" {
@@ -236,10 +267,10 @@ test "assemble control flow transfer" {
     // addr = 0x400000
     // target = 0x401000
     // jmp bytes = (0x401000 - (0x400000 + 0x8)) >> 0x2 = 0x3fe
-    const assembled2 = try assemble(to_ks_arch(ARCH.ARM), to_ks_mode(ARCH.ARM, ARM.ARM), "bal #" ++ target, addr); // 0x48d160 = 0x123456 * 4 + 0x8.
+    const assembled2 = try assemble(to_ks_arch(Arch.ARM), to_ks_mode(Arch.ARM, ARM.ARM), "bal #" ++ target, addr); // 0x48d160 = 0x123456 * 4 + 0x8.
     defer keystone.ks_free(assembled2.ptr);
     try std.testing.expectEqualSlices(u8, assembled2, try assemble_ctl_flow_transfer(
-        ARCH.ARM,
+        Arch.ARM,
         @intFromEnum(ARM.ARM),
         Endian.little,
         try std.fmt.parseInt(u64, target, 0),
@@ -251,10 +282,10 @@ test "assemble control flow transfer" {
     // addr = 0x400000
     // target = 0x401000
     // jmp bytes = 0x400
-    const assembled5 = try assemble(to_ks_arch(ARCH.ARM64), to_ks_mode(ARCH.ARM64, ARM64.ARM64), "b #" ++ target, addr); // 0x491158 = (0x123456 + 0x1000) << 2.
+    const assembled5 = try assemble(to_ks_arch(Arch.ARM64), to_ks_mode(Arch.ARM64, ARM64.ARM64), "b #" ++ target, addr); // 0x491158 = (0x123456 + 0x1000) << 2.
     defer keystone.ks_free(assembled5.ptr);
     try std.testing.expectEqualSlices(u8, assembled5, try assemble_ctl_flow_transfer(
-        ARCH.ARM64,
+        Arch.ARM64,
         @intFromEnum(ARM64.ARM64),
         Endian.little,
         try std.fmt.parseInt(u64, target, 0),
@@ -266,10 +297,10 @@ test "assemble control flow transfer" {
     // addr = 0x400000
     // target = 0x401000
     // jmp bytes = 0x401000 >> 0x2 = 0x100400
-    const assembled3 = try assemble(to_ks_arch(ARCH.MIPS), to_ks_mode(ARCH.MIPS, MIPS.MIPS64), "j " ++ target, addr); // the jmp target is absolute.
+    const assembled3 = try assemble(to_ks_arch(Arch.MIPS), to_ks_mode(Arch.MIPS, MIPS.MIPS64), "j " ++ target, addr); // the jmp target is absolute.
     defer keystone.ks_free(assembled3.ptr);
     try std.testing.expectEqualSlices(u8, assembled3, try assemble_ctl_flow_transfer(
-        ARCH.MIPS,
+        Arch.MIPS,
         @intFromEnum(MIPS.MIPS64),
         Endian.little,
         try std.fmt.parseInt(u64, target, 0),
@@ -282,7 +313,7 @@ test "assemble control flow transfer" {
     // addr = 0x400000
     // target = 0x401000
     // jmp bytes = 0x401000 - (0x400000 + 0x5) = 0xffb
-    const assembled = try assemble(to_ks_arch(ARCH.X86), to_ks_mode(ARCH.X86, MODE.MODE_64), "jmp " ++ target, addr); // the offset is from the end of the instruction 0x1234567d = 0x12345678 + 0x5.
+    const assembled = try assemble(to_ks_arch(Arch.X86), to_ks_mode(Arch.X86, MODE.MODE_64), "jmp " ++ target, addr); // the offset is from the end of the instruction 0x1234567d = 0x12345678 + 0x5.
     defer keystone.ks_free(assembled.ptr);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 0xe9, 0xfb, 0x0f, 0x00, 0x00 }, assembled);
     // bytes that will make such jump = target - addr. (there are 26 bits available for this jmp).
@@ -290,7 +321,7 @@ test "assemble control flow transfer" {
     // addr = 0x400000
     // target = 0x401000
     // jmp bytes = 0x401000 - 0x400000 = 0x1000
-    const assembled4 = try assemble(to_ks_arch(ARCH.PPC), to_ks_mode(ARCH.PPC, PPC.PPC64), "b " ++ target, addr); // the jmp target is absolute.
+    const assembled4 = try assemble(to_ks_arch(Arch.PPC), to_ks_mode(Arch.PPC, PPC.PPC64), "b " ++ target, addr); // the jmp target is absolute.
     defer keystone.ks_free(assembled4.ptr);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 0x00, 0x10, 0x00, 0x48 }, assembled4);
 
@@ -299,7 +330,7 @@ test "assemble control flow transfer" {
     //try std.testing.expectEqualSlices(u8, &[_]u8{ 0x00, 0x10, 0x00, 0x48 }, assembled6);
 }
 
-fn to_ks_arch(arch: ARCH) keystone.ks_arch {
+fn to_ks_arch(arch: Arch) keystone.ks_arch {
     return switch (arch) {
         .X86 => keystone.KS_ARCH_X86,
         .ARM => keystone.KS_ARCH_ARM,
@@ -313,7 +344,7 @@ fn to_ks_arch(arch: ARCH) keystone.ks_arch {
     };
 }
 
-fn to_ks_mode(comptime arch: ARCH, mode: ARCH_MODE_MAP.get(arch).?) c_int {
+fn to_ks_mode(comptime arch: Arch, mode: ARCH_MODE_MAP.get(arch).?) c_int {
     return switch (arch) {
         .X86 => switch (mode) {
             .MODE_64 => keystone.KS_MODE_64,
