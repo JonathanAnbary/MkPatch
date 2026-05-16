@@ -138,25 +138,58 @@ load_to_addr: []AddrIndex,
 
 const Modder = @This();
 
-pub fn init(gpa: std.mem.Allocator, parsed: *const Parsed, file: anytype) !Modder {
+pub fn init(gpa: std.mem.Allocator, parsed: *const Parsed, file: anytype, io: std.Io) !Modder {
     // + 1 for the sechdr table which appears to not be contained in any section/segment.
     if (parsed.header.shnum + 1 + parsed.header.phnum > std.math.maxInt(u16)) return Error.TooManyFileRanges;
     const ranges = try gpa.alloc(FileRange, parsed.header.shnum + 1 + parsed.header.phnum);
     errdefer gpa.free(ranges);
-    var shdrs_iter = parsed.header.section_header_iterator(file);
+
+    // Read section headers manually
     var i: u16 = 0;
-    while (try shdrs_iter.next()) |shdr| {
-        ranges[i] = .{
-            .off = shdr.sh_offset,
-            .filesz = if ((shdr.sh_type & elf.SHT_NOBITS) != 0) 0 else shdr.sh_size,
-            .addr = shdr.sh_addr,
-            .memsz = shdr.sh_size,
-            .alignment = shdr.sh_addralign,
-            .flags = .{},
-            .to_off = undefined,
-            .to_addr = undefined,
-        };
-        i += 1;
+    if (parsed.header.is_64) {
+        var file_buffer: [8192]u8 = undefined;
+        var file_reader = file.reader(io, &file_buffer);
+        try file_reader.seekTo(parsed.header.shoff);
+        for (0..parsed.header.shnum) |_| {
+            var shdr: elf.Elf64_Shdr = undefined;
+            var shdr_vec = [_][]u8{std.mem.asBytes(&shdr)};
+            const bytes_read = try file_reader.interface.readVec(&shdr_vec);
+            if (bytes_read != @sizeOf(elf.Elf64_Shdr)) return Error.UnexpectedEof;
+
+            ranges[i] = .{
+                .off = shdr.sh_offset,
+                .filesz = if ((shdr.sh_type & elf.SHT_NOBITS) != 0) 0 else shdr.sh_size,
+                .addr = shdr.sh_addr,
+                .memsz = shdr.sh_size,
+                .alignment = shdr.sh_addralign,
+                .flags = .{},
+                .to_off = undefined,
+                .to_addr = undefined,
+            };
+            i += 1;
+        }
+    } else {
+        var file_buffer: [8192]u8 = undefined;
+        var file_reader = file.reader(io, &file_buffer);
+        try file_reader.seekTo(parsed.header.shoff);
+        for (0..parsed.header.shnum) |_| {
+            var shdr: elf.Elf32_Shdr = undefined;
+            var shdr_vec = [_][]u8{std.mem.asBytes(&shdr)};
+            const bytes_read = try file_reader.interface.readVec(&shdr_vec);
+            if (bytes_read != @sizeOf(elf.Elf32_Shdr)) return Error.UnexpectedEof;
+
+            ranges[i] = .{
+                .off = shdr.sh_offset,
+                .filesz = if ((shdr.sh_type & elf.SHT_NOBITS) != 0) 0 else shdr.sh_size,
+                .addr = shdr.sh_addr,
+                .memsz = shdr.sh_size,
+                .alignment = shdr.sh_addralign,
+                .flags = .{},
+                .to_off = undefined,
+                .to_addr = undefined,
+            };
+            i += 1;
+        }
     }
     // TODO: consider first checking if its already contained in a range.
     // NOTE: we create an explict file range for the section header table to ensure that it wont be overriden.
@@ -174,29 +207,71 @@ pub fn init(gpa: std.mem.Allocator, parsed: *const Parsed, file: anytype) !Modde
     var load_count: u16 = 0;
     const load_map = try gpa.alloc(bool, parsed.header.phnum);
     defer gpa.free(load_map);
-    var phdrs_iter = parsed.header.program_header_iterator(file);
+
+    // Read program headers manually
     var phdr_idx: u16 = 0;
-    while (try phdrs_iter.next()) |phdr| : (phdr_idx += 1) {
-        const flags: PFlags = @bitCast(phdr.p_flags);
-        // NOTE: the docs seem to indicate that PT_TLS should not be loaded based on itself (ie it should overlap with a PT_LOAD)
-        // but this does not seem to be the case.
-        load_map[phdr_idx] = ((phdr.p_type == elf.PT_LOAD) or (phdr.p_type == elf.PT_TLS));
-        if (load_map[phdr_idx]) load_count += 1;
-        ranges[i] = .{
-            .off = phdr.p_offset,
-            .filesz = phdr.p_filesz,
-            .addr = phdr.p_vaddr,
-            .memsz = phdr.p_memsz,
-            .alignment = phdr.p_align,
-            .flags = .{
-                .read = flags.PF_R,
-                .write = flags.PF_W,
-                .execute = flags.PF_X,
-            },
-            .to_off = undefined,
-            .to_addr = undefined,
-        };
-        i += 1;
+    if (parsed.header.is_64) {
+        var file_buffer: [8192]u8 = undefined;
+        var file_reader = file.reader(io, &file_buffer);
+        try file_reader.seekTo(parsed.header.phoff);
+        while (phdr_idx < parsed.header.phnum) : (phdr_idx += 1) {
+            var phdr: elf.Elf64_Phdr = undefined;
+            var phdr_vec = [_][]u8{std.mem.asBytes(&phdr)};
+            const bytes_read = try file_reader.interface.readVec(&phdr_vec);
+            if (bytes_read != @sizeOf(elf.Elf64_Phdr)) return Error.UnexpectedEof;
+
+            const flags: PFlags = @bitCast(phdr.p_flags);
+            // NOTE: the docs seem to indicate that PT_TLS should not be loaded based on itself (ie it should overlap with a PT_LOAD)
+            // but this does not seem to be the case.
+            load_map[phdr_idx] = ((phdr.p_type == elf.PT_LOAD) or (phdr.p_type == elf.PT_TLS));
+            if (load_map[phdr_idx]) load_count += 1;
+            ranges[i] = .{
+                .off = phdr.p_offset,
+                .filesz = phdr.p_filesz,
+                .addr = phdr.p_vaddr,
+                .memsz = phdr.p_memsz,
+                .alignment = phdr.p_align,
+                .flags = .{
+                    .read = flags.PF_R,
+                    .write = flags.PF_W,
+                    .execute = flags.PF_X,
+                },
+                .to_off = undefined,
+                .to_addr = undefined,
+            };
+            i += 1;
+        }
+    } else {
+        var file_buffer: [8192]u8 = undefined;
+        var file_reader = file.reader(io, &file_buffer);
+        try file_reader.seekTo(parsed.header.phoff);
+        while (phdr_idx < parsed.header.phnum) : (phdr_idx += 1) {
+            var phdr: elf.Elf32_Phdr = undefined;
+            var phdr_vec = [_][]u8{std.mem.asBytes(&phdr)};
+            const bytes_read = try file_reader.interface.readVec(&phdr_vec);
+            if (bytes_read != @sizeOf(elf.Elf32_Phdr)) return Error.UnexpectedEof;
+
+            const flags: PFlags = @bitCast(@as(u32, phdr.p_flags));
+            // NOTE: the docs seem to indicate that PT_TLS should not be loaded based on itself (ie it should overlap with a PT_LOAD)
+            // but this does not seem to be the case.
+            load_map[phdr_idx] = ((phdr.p_type == elf.PT_LOAD) or (phdr.p_type == elf.PT_TLS));
+            if (load_map[phdr_idx]) load_count += 1;
+            ranges[i] = .{
+                .off = phdr.p_offset,
+                .filesz = phdr.p_filesz,
+                .addr = phdr.p_vaddr,
+                .memsz = phdr.p_memsz,
+                .alignment = phdr.p_align,
+                .flags = .{
+                    .read = flags.PF_R,
+                    .write = flags.PF_W,
+                    .execute = flags.PF_X,
+                },
+                .to_off = undefined,
+                .to_addr = undefined,
+            };
+            i += 1;
+        }
     }
     var off_to_range = try gpa.alloc(RangeIndex, ranges.len);
     errdefer gpa.free(off_to_range[0..ranges.len]);
@@ -421,7 +496,7 @@ fn calc_new_off(self: *const Modder, top_idx: TopIndex, size: u64) !u64 {
     return new_offset;
 }
 
-fn shift_forward(self: *Modder, size: u64, start_top_idx: TopIndex, file: anytype) !void {
+fn shift_forward(self: *Modder, size: u64, start_top_idx: TopIndex, file: anytype, io: std.Io) !void {
     var needed_size = size;
     var top_idx = start_top_idx;
     var adjust_idx: u16 = 0;
@@ -448,7 +523,7 @@ fn shift_forward(self: *Modder, size: u64, start_top_idx: TopIndex, file: anytyp
         adjust_idx -= 1;
         const top_off_idx = top_index.get(self.top_to_off);
         const top_range_idx = top_off_idx.get(self.off_to_range);
-        try stream_shift_forward(file, top_range_idx.get(self.ranges).off, top_range_idx.get(self.ranges).off + top_range_idx.get(self.ranges).filesz, self.adjustments[adjust_idx]);
+        try stream_shift_forward(file, io, top_range_idx.get(self.ranges).off, top_range_idx.get(self.ranges).off + top_range_idx.get(self.ranges).filesz, self.adjustments[adjust_idx]);
         const final_off_idx = if (@intFromEnum(top_index.next()) == self.tops_len) self.ranges_len else @intFromEnum(top_index.next().get(self.top_to_off).*);
         for (@intFromEnum(top_off_idx.*)..final_off_idx) |off_idx| {
             const index = self.off_to_range[off_idx];
@@ -500,7 +575,7 @@ fn set_filerange_field(self: *Modder, index: RangeIndex, val: u64, comptime fiel
 
 /// Create a cave of the given size at the specified location.
 /// assumes that edge was returned from self.get_cave_option(size), and that the file has not been modified since it was called.
-pub fn create_cave(self: *Modder, size: u64, edge: SegEdge, file: anytype) !void {
+pub fn create_cave(self: *Modder, size: u64, edge: SegEdge, file: anytype, io: std.Io) !void {
     // NOTE: moving around the pheader table sounds like a bad idea.
     if (@intFromEnum(edge.top_idx) == 0) return Error.CantExpandPhdr;
     const idx = edge.top_idx.get(self.top_to_off).get(self.off_to_range);
@@ -509,7 +584,7 @@ pub fn create_cave(self: *Modder, size: u64, edge: SegEdge, file: anytype) !void
     const old_offset: u64 = idx.get(self.ranges).off;
     const new_offset: u64 = if (edge.is_end) old_offset else try self.calc_new_off(edge.top_idx, size);
     const first_adjust = if (edge.is_end) size else if (new_offset < old_offset) size - (old_offset - new_offset) else size + (new_offset - old_offset);
-    try self.shift_forward(first_adjust, edge.top_idx.next(), file);
+    try self.shift_forward(first_adjust, edge.top_idx.next(), file, io);
 
     if (!edge.is_end) {
         const top_off_idx = edge.top_idx.get(self.top_to_off);
@@ -519,7 +594,7 @@ pub fn create_cave(self: *Modder, size: u64, edge: SegEdge, file: anytype) !void
         // if (shoff_top_idx == edge.top_idx) {
         //     try self.set_ehdr_field(self.header.shoff + new_offset + size - old_offset, "shoff", file);
         // }
-        try stream_shift_forward(file, old_offset, old_offset + idx.get(self.ranges).filesz, first_adjust);
+        try stream_shift_forward(file, io, old_offset, old_offset + idx.get(self.ranges).filesz, first_adjust);
 
         idx.get(self.ranges).off = new_offset;
         try self.set_filerange_field(idx.*, idx.get(self.ranges).off, .off, file);
@@ -596,7 +671,7 @@ fn set_new_phdr(self: *const Modder, comptime is_64: bool, size: u64, flags: Fil
     if (try file.write(&temp) != @sizeOf(T)) return Error.UnexpectedEof;
 }
 
-pub fn create_filerange(self: *Modder, gpa: std.mem.Allocator, size: u64, file_align: u64, flags: FileRangeFlags, file: anytype) !u64 {
+pub fn create_filerange(self: *Modder, gpa: std.mem.Allocator, size: u64, file_align: u64, flags: FileRangeFlags, file: anytype, io: std.Io) !u64 {
     const phdr_top_idx = self.off_to_top_idx(self.header.phoff);
     const top_off_idx = phdr_top_idx.get(self.top_to_off);
     const top_range_idx = top_off_idx.get(self.off_to_range);
@@ -631,9 +706,10 @@ pub fn create_filerange(self: *Modder, gpa: std.mem.Allocator, size: u64, file_a
     if ((phdr_range_idx.get(self.ranges).off + phdr_range_idx.get(self.ranges).filesz) != (self.header.phoff + self.header.phentsize * self.header.phnum)) {
         return Error.PhdrTablePhdrNotFound;
     }
-    try self.shift_forward(needed_size, phdr_top_idx.next(), file);
+    try self.shift_forward(needed_size, phdr_top_idx.next(), file, io);
     try stream_shift_forward(
         file,
+        io,
         self.header.phoff + self.header.phentsize * self.header.phnum,
         top_range_idx.get(self.ranges).off + top_range_idx.get(self.ranges).filesz,
         needed_size,
@@ -911,7 +987,7 @@ comptime {
                     const expected_stdout = "Run `zig build test` to run the tests.\n";
                     const expected_stderr = "All your codebase are belong to us.\n";
                     const test_with_cave_prefix = "./create_cave_same_output_elf";
-                    const cwd: std.fs.Dir = std.fs.cwd();
+                    const cwd = std.fs.cwd();
                     const test_with_cave_filename = test_with_cave_prefix ++ target ++ optimize;
                     {
                         const build_src_result = try std.process.Child.run(.{
@@ -959,7 +1035,7 @@ comptime {
 test "corrupted elf (non containied overlapping ranges)" {
     const test_src_path = "./tests/hello_world.zig";
     const test_with_cave = "./corrupted_elf";
-    const cwd: std.fs.Dir = std.fs.cwd();
+    const cwd = std.fs.cwd();
 
     {
         const build_src_result = try std.process.Child.run(.{
@@ -985,7 +1061,7 @@ test "repeated cave expansion equal to single cave" {
     const test_src_path = "./tests/hello_world.zig";
     const test_with_repeated_cave = "./create_repeated_cave_same_output_elf";
     const test_with_non_repeated_cave = "./create_non_repeated_cave_same_output_elf";
-    const cwd: std.fs.Dir = std.fs.cwd();
+    const cwd = std.fs.cwd();
 
     {
         const build_src_result = try std.process.Child.run(.{
@@ -1039,7 +1115,7 @@ test "repeated cave expansion equal to single cave" {
 test "create segment same output" {
     const test_src_path = "./tests/hello_world.zig";
     const test_with_cave = "./create_segment_same_output_elf";
-    const cwd: std.fs.Dir = std.fs.cwd();
+    const cwd = std.fs.cwd();
 
     {
         const build_src_result = try std.process.Child.run(.{
@@ -1068,12 +1144,11 @@ test "create segment same output" {
     {
         var f = try cwd.openFile(test_with_cave, .{ .mode = .read_write });
         defer f.close();
-        var stream = std.io.StreamSource{ .file = f };
         const wanted_size = 0xfff;
-        const parsed = try Parsed.init(&stream);
-        var elf_modder: Modder = try Modder.init(std.testing.allocator, &parsed, &stream);
+        const parsed = try Parsed.init(&f);
+        var elf_modder: Modder = try Modder.init(std.testing.allocator, &parsed, &f);
         defer elf_modder.deinit(std.testing.allocator);
-        _ = try elf_modder.create_filerange(std.testing.allocator, wanted_size, 1, .{ .execute = true, .read = true, .write = true }, &stream);
+        _ = try elf_modder.create_filerange(std.testing.allocator, wanted_size, 1, .{ .execute = true, .read = true, .write = true }, &f);
     }
     if (builtin.os.tag != .linux) {
         return error.SkipZigTest;

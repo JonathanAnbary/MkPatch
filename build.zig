@@ -20,7 +20,6 @@ pub fn build(b: *std.Build) void {
     const capstone_dependency = b.dependency("capstone", .{
         .target = target,
         .optimize = optimize,
-        .shared = shared,
     });
 
     const lib_mod = b.addModule("binmodify", .{
@@ -100,9 +99,9 @@ pub fn build(b: *std.Build) void {
         .root_module = tests_mod,
         .filters = test_filters,
     });
-    all_tests.linkLibrary(capstone_dependency.artifact("capstone"));
-    all_tests.addObjectFile(b.path("keystone/build/llvm/lib64/libkeystone.a"));
-    all_tests.addIncludePath(b.path("keystone/include/keystone/"));
+    tests_mod.linkLibrary(capstone_dependency.artifact("capstone"));
+    tests_mod.addObjectFile(b.path("keystone/build/llvm/lib64/libkeystone.a"));
+    tests_mod.addIncludePath(b.path("keystone/include/keystone/"));
     b.installArtifact(all_tests);
 
     const run_unit_tests = b.addRunArtifact(all_tests);

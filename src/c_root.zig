@@ -12,8 +12,20 @@ const ShiftError = @import("utils.zig").ShiftError;
 
 pub const Disasm = @import("capstone.zig").Disasm;
 
-var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+var gpa = std.heap.DebugAllocator(.{}){};
 const alloc = gpa.allocator();
+
+// Global io instance for C exports
+var threaded_io: std.Io.Threaded = undefined;
+var io_initialized: bool = false;
+
+fn getIo() std.Io {
+    if (!io_initialized) {
+        threaded_io = std.Io.Threaded.init(alloc, .{});
+        io_initialized = true;
+    }
+    return threaded_io.io();
+}
 
 pub const Result: type = enum(u8) {
     Ok = 0,
@@ -191,12 +203,13 @@ pub fn err_to_res(e: AllError) Result {
     };
 }
 
-fn inner_ElfPatcher_init(out: *patch.Patcher(ElfModder, Disasm), stream: *std.io.StreamSource) !void {
-    const parsed = try ElfParsed.init(stream);
-    out.* = try .init(alloc, stream, &parsed);
+fn inner_ElfPatcher_init(out: *patch.Patcher(ElfModder, Disasm), stream: *std.Io.File) !void {
+    const io = getIo();
+    const parsed = try ElfParsed.init(stream, io);
+    out.* = try .init(alloc, stream, &parsed, io);
 }
 
-pub export fn ElfPatcher_init(out: *patch.Patcher(ElfModder, Disasm), stream: *std.io.StreamSource) Result {
+pub export fn ElfPatcher_init(out: *patch.Patcher(ElfModder, Disasm), stream: *std.Io.File) Result {
     inner_ElfPatcher_init(out, stream) catch |err| return err_to_res(err);
     return .Ok;
 }
@@ -205,24 +218,27 @@ pub export fn ElfPatcher_deinit(patcher: *patch.Patcher(ElfModder, Disasm)) void
     patcher.deinit(alloc);
 }
 
-pub export fn ElfPatcher_pure_patch(patcher: *patch.Patcher(ElfModder, Disasm), addr: u64, patch_data: [*:0]const u8, stream: *std.io.StreamSource, maybe_patch_info: ?*patch.PatchInfo) Result {
+pub export fn ElfPatcher_pure_patch(patcher: *patch.Patcher(ElfModder, Disasm), addr: u64, patch_data: [*:0]const u8, stream: *std.Io.File, maybe_patch_info: ?*patch.PatchInfo) Result {
+    const io = getIo();
     if (maybe_patch_info) |patch_info| {
-        patch_info.* = patcher.try_patch(null, addr, std.mem.span(patch_data), stream) catch |err| return err_to_res(err);
+        patch_info.* = patcher.try_patch(null, addr, std.mem.span(patch_data), stream, io) catch |err| return err_to_res(err);
     } else {
-        _ = patcher.try_patch(null, addr, std.mem.span(patch_data), stream) catch |err| return err_to_res(err);
+        _ = patcher.try_patch(null, addr, std.mem.span(patch_data), stream, io) catch |err| return err_to_res(err);
     }
     return .Ok;
 }
 
-fn inner_CoffPatcher_init(out: *patch.Patcher(CoffModder, Disasm), stream: *std.io.StreamSource) !void {
-    const data = try alloc.alloc(u8, try stream.getEndPos());
+fn inner_CoffPatcher_init(out: *patch.Patcher(CoffModder, Disasm), stream: *std.Io.File) !void {
+    const io = getIo();
+    const stat = try stream.stat(io);
+    const data = try alloc.alloc(u8, stat.size);
     defer alloc.free(data);
     const coff = try std.coff.Coff.init(data, false);
     const parsed = CoffParsed.init(coff);
-    out.* = try .init(alloc, stream, &parsed);
+    out.* = try .init(alloc, stream, &parsed, io);
 }
 
-pub export fn CoffPatcher_init(out: *patch.Patcher(CoffModder, Disasm), stream: *std.io.StreamSource) Result {
+pub export fn CoffPatcher_init(out: *patch.Patcher(CoffModder, Disasm), stream: *std.Io.File) Result {
     inner_CoffPatcher_init(out, stream) catch |err| return err_to_res(err);
     return .Ok;
 }
@@ -231,11 +247,12 @@ pub export fn CoffPatcher_deinit(patcher: *patch.Patcher(CoffModder, Disasm)) vo
     patcher.deinit(alloc);
 }
 
-pub export fn CoffPatcher_pure_patch(patcher: *patch.Patcher(CoffModder, Disasm), addr: u64, patch_data: [*:0]const u8, stream: *std.io.StreamSource, maybe_patch_info: ?*patch.PatchInfo) Result {
+pub export fn CoffPatcher_pure_patch(patcher: *patch.Patcher(CoffModder, Disasm), addr: u64, patch_data: [*:0]const u8, stream: *std.Io.File, maybe_patch_info: ?*patch.PatchInfo) Result {
+    const io = getIo();
     if (maybe_patch_info) |patch_info| {
-        patch_info.* = patcher.try_patch(null, addr, std.mem.span(patch_data), stream) catch |err| return err_to_res(err);
+        patch_info.* = patcher.try_patch(null, addr, std.mem.span(patch_data), stream, io) catch |err| return err_to_res(err);
     } else {
-        _ = patcher.try_patch(null, addr, std.mem.span(patch_data), stream) catch |err| return err_to_res(err);
+        _ = patcher.try_patch(null, addr, std.mem.span(patch_data), stream, io) catch |err| return err_to_res(err);
     }
     return .Ok;
 }
@@ -244,7 +261,7 @@ test "c patcher api elf" {
     const test_src_path = "./tests/hello_world.zig";
     const test_with_patch_path = "./patcher_api_elf";
     const native_compile_path = "./c_elf_hello_world";
-    const cwd: std.fs.Dir = std.fs.cwd();
+    const cwd = std.fs.cwd();
 
     {
         const build_native_result = try std.process.Child.run(.{
@@ -277,13 +294,12 @@ test "c patcher api elf" {
     {
         var f = try cwd.openFile(test_with_patch_path, .{ .mode = .read_write });
         defer f.close();
-        var stream = std.io.StreamSource{ .file = f };
         const patch_data: [*:0]const u8 = @ptrCast(&([_]u8{0x90} ** 0x900 ++ [_]u8{0x00})); // not doing 1000 since the cave size is only 1000 and we need some extra for the overwritten instructions and such.
         var patcher: patch.Patcher(ElfModder, Disasm) = undefined;
-        const res = ElfPatcher_init(&patcher, &stream);
+        const res = ElfPatcher_init(&patcher, &f);
         try std.testing.expectEqual(.Ok, res);
         defer ElfPatcher_deinit(&patcher);
-        try std.testing.expectEqual(.Ok, ElfPatcher_pure_patch(&patcher, 0x1001B43, patch_data, &stream, null));
+        try std.testing.expectEqual(.Ok, ElfPatcher_pure_patch(&patcher, 0x1001B43, patch_data, &f, null));
     }
 
     if (builtin.os.tag != .linux) {

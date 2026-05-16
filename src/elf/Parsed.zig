@@ -9,9 +9,11 @@ header: elf.Header,
 
 const Self = @This();
 
-pub fn init(file: anytype) !Self {
+pub fn init(file: *std.Io.File, io: std.Io) !Self {
+    var buffer: [8192]u8 = undefined;
+    var reader = file.reader(io, &buffer);
     return .{
-        .header = try elf.Header.read(file),
+        .header = try elf.Header.read(&reader.interface),
     };
 }
 

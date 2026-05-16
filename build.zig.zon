@@ -5,8 +5,8 @@
 
     .dependencies = .{
         .capstone = .{
-            .url = "git+https://github.com/felikcat/capstone.git?ref=5.0.3#44390c7c0af73eb6f5f99ca381677be202e8cedf",
-            .hash = "1220d5bc3946778b2214dbf8b7a05fec547da6a236a9e08334246bbfdda55e532d70",
+            .url = "git+https://github.com/allyourcodebase/capstone.git#586dd00c4fd1615f4af7e603376dd13b683a25aa",
+            .hash = "capstone-6.0.0-Alpha4-tmNUgQE9AABNw_9iAfvi1hPfRVFKQsw2bqWVXOeM7Kqz",
         },
     },
     .paths = .{

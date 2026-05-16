@@ -6,8 +6,8 @@ fn arg_err(out: std.io.AnyWriter) !void {
 }
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer if (gpa.deinit() != std.heap.Check.ok) std.debug.panic("Program leaked", .{});
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer if (gpa.deinit() != .ok) std.debug.panic("Program leaked", .{});
     const alloc = gpa.allocator();
 
     const stdout = std.io.getStdOut().writer();

@@ -9,11 +9,11 @@ const patch = @import("patch.zig");
 
 const capstone = @import("capstone.zig");
 
-fn arg_err(out: std.io.AnyWriter) !void {
+fn arg_err(out: *std.Io.Writer) !void {
     try out.print("binmodify <file-to-patch> <patch-addr> <patch>", .{});
 }
 
-fn find_cave_err(out: std.io.AnyWriter) !void {
+fn find_cave_err(out: *std.Io.Writer) !void {
     try out.print("No Code cave found that fits request", .{});
 }
 
@@ -24,53 +24,64 @@ pub const Error = error{
     FileTypeNotSupported,
 };
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer if (gpa.deinit() != std.heap.Check.ok) std.debug.panic("Program leaked", .{});
+pub fn main(init: std.process.Init) !void {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer if (gpa.deinit() != .ok) std.debug.panic("Program leaked", .{});
     const alloc = gpa.allocator();
 
-    const stdout = std.io.getStdOut().writer();
-    const stderr = std.io.getStdErr().writer();
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_writer = std.Io.File.stdout().writer(init.io, &stdout_buffer);
+    const stdout = &stdout_writer.interface;
+    defer stdout.flush() catch {};
 
-    var args = try std.process.argsWithAllocator(alloc);
-    defer args.deinit();
-    _ = args.next() orelse return arg_err(stderr.any());
+    var stderr_buffer: [4096]u8 = undefined;
+    var stderr_writer = std.Io.File.stderr().writer(init.io, &stderr_buffer);
+    const stderr = &stderr_writer.interface;
 
-    const to_patch = args.next() orelse return arg_err(stderr.any());
-    const patch_addr_str = args.next() orelse return arg_err(stderr.any());
+    var args = init.minimal.args.iterate();
+    _ = args.next() orelse return arg_err(stderr);
+
+    const to_patch = args.next() orelse return arg_err(stderr);
+    const patch_addr_str = args.next() orelse return arg_err(stderr);
     const patch_addr = std.fmt.parseUnsigned(u64, patch_addr_str, 0) catch |err| {
         return stderr.print("failed to parse {s} as u32 (err - {})\n", .{ patch_addr_str, err });
     };
-    const wanted_patch_hex = args.next() orelse return arg_err(stderr.any());
+    const wanted_patch_hex = args.next() orelse return arg_err(stderr);
     if (wanted_patch_hex.len == 0) return stderr.print("<patch> must be hex bytes", .{});
     const patch_buf = try alloc.alloc(u8, @divFloor(wanted_patch_hex.len, 2));
     defer alloc.free(patch_buf);
     const wanted_patch = try std.fmt.hexToBytes(patch_buf, wanted_patch_hex);
-    var f = try std.fs.cwd().openFile(to_patch, .{ .mode = .read_write });
-    defer f.close();
+    const cwd = std.Io.Dir.cwd();
+    var f = try cwd.openFile(init.io, to_patch, .{ .mode = .read_write });
+    defer f.close(init.io);
 
     var buf: [4]u8 = undefined;
-    if ((try f.read(buf[0..MZ.len])) != MZ.len) return Error.FileTypeNotSupported;
+    var read_buffer: [1024]u8 = undefined;
+    var reader = f.reader(init.io, &read_buffer);
+    var mz_vec = [_][]u8{buf[0..MZ.len]};
+    if ((try reader.interface.readVec(&mz_vec)) != MZ.len) return Error.FileTypeNotSupported;
     if (std.mem.eql(u8, buf[0..MZ.len], MZ)) {
-        const data = try alloc.alloc(u8, try f.getEndPos());
+        const stat = try f.stat(init.io);
+        const data = try alloc.alloc(u8, stat.size);
         defer alloc.free(data);
-        try f.seekTo(0);
-        std.debug.assert(try f.readAll(data) == data.len);
+        const buffers = [_][]u8{data};
+        std.debug.assert((try f.readPositional(init.io, &buffers, 0)) == data.len);
         const coff = try std.coff.Coff.init(data, false);
         const parsed = CoffParsed.init(coff);
-        var patcher = try patch.Patcher(CoffModder, capstone.Disasm).init(alloc, &f, &parsed);
+        var patcher = try patch.Patcher(CoffModder, capstone.Disasm).init(alloc, &f, &parsed, init.io);
         defer patcher.deinit(alloc);
         try stdout.print("Performing pure patch at addr {X}, patch {X}\n", .{ patch_addr, wanted_patch });
-        _ = try patcher.try_patch(alloc, patch_addr, wanted_patch, &f);
+        _ = try patcher.try_patch(alloc, patch_addr, wanted_patch, &f, init.io);
         try stdout.print("Patch done\n", .{});
     } else {
-        if ((try f.read(buf[MZ.len..ELF.len])) != (ELF.len - MZ.len)) return Error.FileTypeNotSupported;
+        var elf_vec = [_][]u8{buf[MZ.len..ELF.len]};
+        if ((try reader.interface.readVec(&elf_vec)) != (ELF.len - MZ.len)) return Error.FileTypeNotSupported;
         if (std.mem.eql(u8, buf[0..ELF.len], ELF)) {
-            const parsed = try ElfParsed.init(&f);
-            var patcher = try patch.Patcher(ElfModder, capstone.Disasm).init(alloc, &f, &parsed);
+            const parsed = try ElfParsed.init(&f, init.io);
+            var patcher = try patch.Patcher(ElfModder, capstone.Disasm).init(alloc, &f, &parsed, init.io);
             defer patcher.deinit(alloc);
             try stdout.print("Performing pure patch at addr {X}, patch {X}\n", .{ patch_addr, wanted_patch });
-            _ = try patcher.try_patch(alloc, patch_addr, wanted_patch, &f);
+            _ = try patcher.try_patch(alloc, patch_addr, wanted_patch, &f, init.io);
             try stdout.print("Patch done\n", .{});
         }
     }

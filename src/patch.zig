@@ -41,8 +41,9 @@ pub fn Patcher(Modder: type, Disasm: type) type {
             alloc: std.mem.Allocator,
             reader: anytype,
             parsed: anytype,
+            io: std.Io,
         ) !Self {
-            var modder: Modder = try Modder.init(alloc, parsed, reader);
+            var modder: Modder = try Modder.init(alloc, parsed, reader, io);
             errdefer modder.deinit(alloc);
             const farch = try parsed.get_arch();
             // NOTE: mode might be something that is not constant across the file.
@@ -65,11 +66,11 @@ pub fn Patcher(Modder: type, Disasm: type) type {
             self.disasm.deinit();
         }
 
-        pub fn patch_reqs(self: *const Self, addr: u64, insn_buff: []u8, file: anytype) !PatchReqs {
+        pub fn patch_reqs(self: *const Self, addr: u64, insn_buff: []u8, file: anytype, io: std.Io) !PatchReqs {
             // TODO: think about this 20 (pull out of my ass as the maximum partial instruction size that might be needed).
             const off_before_patch = try self.modder.addr_to_off(addr);
-            try file.seekTo(off_before_patch);
-            const max = try file.read(insn_buff);
+            const buffers = [_][]u8{insn_buff};
+            const max = try file.readPositional(io, &buffers, off_before_patch);
             const ctl_transfer_size: u8 = @intCast(@max(
                 (try ctl_asm.arch_to_ctl_flow(self.arch, true)).len,
                 (try ctl_asm.arch_to_ctl_flow(self.arch, false)).len,
@@ -107,16 +108,16 @@ pub fn Patcher(Modder: type, Disasm: type) type {
             if (try file.write(insn_buff[0..cave_to_patch_size]) != cave_to_patch_size) return Error.UnexpectedEof;
         }
 
-        pub fn try_patch(self: *Self, gpa_maybe: ?std.mem.Allocator, addr: u64, patch: []const u8, file: anytype) !PatchInfo {
+        pub fn try_patch(self: *Self, gpa_maybe: ?std.mem.Allocator, addr: u64, patch: []const u8, file: anytype, io: std.Io) !PatchInfo {
             var insn_buff: [ctl_asm.MAX_CTL_FLOW + 20]u8 = undefined;
-            const reqs = try self.patch_reqs(addr, &insn_buff, file);
+            const reqs = try self.patch_reqs(addr, &insn_buff, file, io);
             if (patch.len + reqs.insn_to_move_size + reqs.ctl_transfer_size > std.math.maxInt(u32)) {
                 return Error.PatchTooLarge;
             }
             const freerange_size: u32 = @intCast(reqs.ctl_transfer_size + reqs.insn_to_move_size + patch.len);
             const freerange_off = blk: {
                 if (try self.modder.get_cave_option(freerange_size, .{ .read = true, .execute = true })) |cave_option| {
-                    try self.modder.create_cave(freerange_size, cave_option, file);
+                    try self.modder.create_cave(freerange_size, cave_option, file, io);
                     break :blk self.modder.cave_to_off(cave_option, freerange_size);
                 } else if (gpa_maybe) |gpa| {
                     break :blk try self.modder.create_filerange(
@@ -125,6 +126,7 @@ pub fn Patcher(Modder: type, Disasm: type) type {
                         try ctl_asm.insn_align(self.arch, self.mode),
                         .{ .read = true, .execute = true },
                         file,
+                        io,
                     );
                 } else return Error.NoFreeSpace;
             };
@@ -164,7 +166,7 @@ comptime {
                     const expected_stdout = "Run `zig build test` to run the tests.\n";
                     const expected_stderr = "All your codebase are belong to us.\n";
                     const test_with_patch_prefix = "./elf_nop_patch_no_difference";
-                    const cwd: std.fs.Dir = std.fs.cwd();
+                    const cwd = std.fs.cwd();
 
                     const test_with_patch_path = test_with_patch_prefix ++ target ++ optimize;
 
@@ -225,7 +227,7 @@ comptime {
                     const expected_stdout = "Run `zig build test` to run the tests.\n";
                     const expected_stderr = "All your codebase are belong to us.\n";
                     const test_with_patch_prefix = "./elf_large_nop_patch_no_difference";
-                    const cwd: std.fs.Dir = std.fs.cwd();
+                    const cwd = std.fs.cwd();
 
                     const test_with_patch_path = test_with_patch_prefix ++ target ++ optimize;
 
@@ -285,7 +287,7 @@ comptime {
                     const test_with_patch_prefix = "./coff_nop_patch_no_difference";
                     const expected_stdout = "Run `zig build test` to run the tests.\n";
                     const expected_stderr = "All your codebase are belong to us.\n";
-                    const cwd: std.fs.Dir = std.fs.cwd();
+                    const cwd = std.fs.cwd();
 
                     const test_with_patch_path = test_with_patch_prefix ++ target ++ optimize ++ ".exe";
                     {
@@ -348,7 +350,7 @@ comptime {
                     const test_with_patch_prefix = "./coff_large_nop_patch_no_difference";
                     const expected_stdout = "Run `zig build test` to run the tests.\n";
                     const expected_stderr = "All your codebase are belong to us.\n";
-                    const cwd: std.fs.Dir = std.fs.cwd();
+                    const cwd = std.fs.cwd();
 
                     const test_with_patch_path = test_with_patch_prefix ++ target ++ optimize ++ ".exe";
                     {
@@ -400,7 +402,7 @@ comptime {
 test "elf fizzbuzz fizz always" {
     const test_src_path = "./tests/fizzbuzz.zig";
     const test_with_patch_path = "./elf_fizzbuzz_fizz_always";
-    const cwd: std.fs.Dir = std.fs.cwd();
+    const cwd = std.fs.cwd();
 
     {
         const build_src_result = try std.process.Child.run(.{
@@ -483,7 +485,7 @@ test "elf fizzbuzz fizz always" {
 test "coff fizzbuzz fizz always" {
     const test_src_path = "./tests/fizzbuzz.zig";
     const test_with_patch_path = "./coff_fizzbuzz_fizz_always.exe";
-    const cwd: std.fs.Dir = std.fs.cwd();
+    const cwd = std.fs.cwd();
 
     {
         const build_src_result = try std.process.Child.run(.{
